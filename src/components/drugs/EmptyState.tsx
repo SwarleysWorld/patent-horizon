@@ -4,7 +4,7 @@ export function EmptyState({ hasFilters }: { hasFilters: boolean }) {
       <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">No drugs match these filters</p>
       <p className="text-sm text-zinc-500 dark:text-zinc-500">
         {hasFilters
-          ? "Try widening the time horizon or clearing the search term."
+          ? "Try widening the time horizon, or clearing the search term and advanced filters."
           : "There's no patent or exclusivity data loaded yet."}
       </p>
     </div>

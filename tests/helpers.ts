@@ -54,8 +54,8 @@ function daysFromNow(days: number): Date {
 export interface Fixtures {
   companyId: string;
   alphaDrugId: string; // patent expiring soon (+10d)
-  betaMedId: string; // patent +100d, exclusivity +200d — exclusivity controls
-  gammaCureId: string; // patent +1000d — far out
+  betaMedId: string; // patent +100d, exclusivity +200d — exclusivity controls; drugClass "Statin"
+  gammaCureId: string; // patent +1000d — far out; modality PEPTIDE
   deltaFormId: string; // patent already expired (-30d)
   epsilonGenId: string; // no patents, no exclusivities at all
   zetaOldId: string; // only a delisted patent — behaves like no barrier
@@ -106,6 +106,7 @@ export async function seedFixtures(): Promise<Fixtures> {
       dosageForm: "CAPSULE",
       route: "ORAL",
       strength: "20MG",
+      drugClass: "Statin",
     },
   });
   await prisma.patent.create({
@@ -132,6 +133,7 @@ export async function seedFixtures(): Promise<Fixtures> {
       dosageForm: "INJECTABLE",
       route: "INTRAVENOUS",
       strength: "5MG/ML",
+      modality: "PEPTIDE",
     },
   });
   await prisma.patent.create({

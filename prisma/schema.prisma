@@ -19,6 +19,23 @@ enum ApplicationType {
   BLA
 }
 
+// Coarse drug "modality" — the structural category of the therapy, not its
+// mechanism/indication. Classified heuristically from the active
+// ingredient's name via INN/USAN naming-stem conventions (see
+// src/lib/classification/modality.ts) — not authoritative, and — this
+// matters — the Orange Book source data contains essentially zero
+// MONOCLONAL_ANTIBODY entries, because biologics are regulated under BLA
+// and tracked in FDA's separate "Purple Book," which isn't ingested here.
+// A fixed, small, stable vocabulary (unlike drugClass below), so an enum
+// fits the project's established convention for that kind of field.
+enum DrugModality {
+  SMALL_MOLECULE
+  PEPTIDE
+  OLIGONUCLEOTIDE
+  MONOCLONAL_ANTIBODY
+  OTHER
+}
+
 // The company that holds an FDA application (innovator or generic applicant).
 model Company {
   id        String   @id @default(cuid())
@@ -50,6 +67,17 @@ model Drug {
   route      String // e.g. "ORAL"
   strength   String // e.g. "10MG"
 
+  // Best-effort classification, set at ingestion time (and backfillable via
+  // scripts/classify-drugs.ts) — see src/lib/classification/. modality is
+  // the small fixed taxonomy above; drugClass is an open, best-effort
+  // mechanism/therapeutic tag (e.g. "Statin", "ACE inhibitor") from the
+  // same naming-stem approach — kept as a nullable free string rather than
+  // an enum because that vocabulary is large, growing, and nowhere near as
+  // reliably detectable as modality (matches the reasoning already applied
+  // to Exclusivity.code).
+  modality  DrugModality @default(SMALL_MOLECULE)
+  drugClass String?
+
   approvalDate DateTime?
 
   createdAt DateTime @default(now())
@@ -63,6 +91,9 @@ model Drug {
   @@index([brandName])
   @@index([genericName])
   @@index([companyId])
+  @@index([modality])
+  @@index([drugClass])
+  @@index([dosageForm])
 }
 
 // A patent listed against a drug product.

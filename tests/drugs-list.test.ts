@@ -112,6 +112,72 @@ describe("listDrugs (query layer)", () => {
       expect(result.data).toHaveLength(0);
       expect(result.pagination.total).toBe(0);
     });
+
+    it("matches company name", async () => {
+      const result = await listDrugs(parsedQuery({ q: "acme", withinDays: "36500" }));
+      const ids = result.data.map((d) => d.id);
+      expect(ids).toEqual(
+        expect.arrayContaining([fx.alphaDrugId, fx.betaMedId, fx.gammaCureId, fx.deltaFormId]),
+      );
+    });
+  });
+
+  describe("advanced search filters", () => {
+    it("modality filters to drugs with that exact modality", async () => {
+      const result = await listDrugs(parsedQuery({ modality: "PEPTIDE", withinDays: "36500" }));
+      expect(result.data.map((d) => d.id)).toEqual([fx.gammaCureId]);
+    });
+
+    it("drugClass filters to drugs with that exact tag", async () => {
+      const result = await listDrugs(parsedQuery({ drugClass: "Statin", withinDays: "36500" }));
+      expect(result.data.map((d) => d.id)).toEqual([fx.betaMedId]);
+    });
+
+    it("applicationType filters exactly", async () => {
+      const result = await listDrugs(parsedQuery({ applicationType: "ANDA", withinDays: "36500" }));
+      const ids = result.data.map((d) => d.id);
+      expect(ids).toContain(fx.gammaCureId); // ANDA
+      expect(ids).not.toContain(fx.alphaDrugId); // NDA
+    });
+
+    it("dosageForm filters exactly", async () => {
+      const result = await listDrugs(parsedQuery({ dosageForm: "INJECTABLE", withinDays: "36500" }));
+      expect(result.data.map((d) => d.id)).toEqual([fx.gammaCureId]);
+    });
+
+    it("expiresAfter excludes estimates before the given date", async () => {
+      // alpha (+10d) and delta (past) should drop out of a window starting +50d.
+      const after = new Date(Date.now() + 50 * 86_400_000).toISOString().slice(0, 10);
+      const result = await listDrugs(parsedQuery({ expiresAfter: after, withinDays: "36500" }));
+      const ids = result.data.map((d) => d.id);
+      expect(ids).not.toContain(fx.alphaDrugId);
+      expect(ids).not.toContain(fx.deltaFormId);
+      expect(ids).toContain(fx.betaMedId);
+      expect(ids).toContain(fx.gammaCureId);
+    });
+
+    it("expiresBefore excludes estimates after the given date", async () => {
+      const before = new Date(Date.now() + 50 * 86_400_000).toISOString().slice(0, 10);
+      const result = await listDrugs(parsedQuery({ expiresBefore: before, withinDays: "36500" }));
+      const ids = result.data.map((d) => d.id);
+      expect(ids).toContain(fx.alphaDrugId);
+      expect(ids).toContain(fx.deltaFormId);
+      expect(ids).not.toContain(fx.betaMedId);
+      expect(ids).not.toContain(fx.gammaCureId);
+    });
+
+    it("combines multiple advanced filters with AND", async () => {
+      const result = await listDrugs(
+        parsedQuery({ applicationType: "NDA", drugClass: "Statin", withinDays: "36500" }),
+      );
+      expect(result.data.map((d) => d.id)).toEqual([fx.betaMedId]);
+    });
+
+    it("a filter matching nothing returns an empty page, not an error", async () => {
+      const result = await listDrugs(parsedQuery({ modality: "MONOCLONAL_ANTIBODY", withinDays: "36500" }));
+      expect(result.data).toHaveLength(0);
+      expect(result.pagination.total).toBe(0);
+    });
   });
 
   describe("pagination", () => {
@@ -203,6 +269,33 @@ describe("GET /api/drugs (route layer)", () => {
     const res = await GET(req(""));
     const body = await res.json();
     expect(body.pagination.limit).toBe(20);
+  });
+
+  it("returns a structured 400 for an invalid modality", async () => {
+    const res = await GET(req("?modality=NOT_REAL"));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.details[0].field).toBe("modality");
+  });
+
+  it("returns a structured 400 for a malformed expiresAfter date", async () => {
+    const res = await GET(req("?expiresAfter=not-a-date"));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.details[0].field).toBe("expiresAfter");
+  });
+
+  it("includes modality and drugClass on each returned drug", async () => {
+    const res = await GET(req("?withinDays=36500"));
+    const body = await res.json();
+    const beta = body.data.find((d: { id: string }) => d.id === fx.betaMedId);
+    expect(beta).toMatchObject({ modality: "SMALL_MOLECULE", drugClass: "Statin" });
+  });
+
+  it("filters via query params end to end", async () => {
+    const res = await GET(req("?modality=PEPTIDE&withinDays=36500"));
+    const body = await res.json();
+    expect(body.data.map((d: { id: string }) => d.id)).toEqual([fx.gammaCureId]);
   });
 });
 

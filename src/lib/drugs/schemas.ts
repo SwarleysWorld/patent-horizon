@@ -3,7 +3,7 @@ import { z } from "zod";
 // ---- Query params: GET /api/drugs -----------------------------------
 
 export const ListDrugsQuerySchema = z.object({
-  /** Substring match against brand or generic name. Case-insensitive. */
+  /** Substring match against brand name, generic name, or company name. Case-insensitive. */
   q: z
     .string()
     .trim()
@@ -22,6 +22,21 @@ export const ListDrugsQuerySchema = z.object({
     .min(0, "must be 0 or greater")
     .max(36500, "must be 100 years or fewer")
     .optional(),
+  /**
+   * Explicit generic-entry date-range bounds, for advanced search. Distinct
+   * from `withinDays` (a "next N days from now" shortcut for the primary
+   * horizon chips) rather than replacing it — both filter the same
+   * underlying estimate and can be combined, though in practice a caller
+   * will typically use one or the other.
+   */
+  expiresAfter: z.iso.date("must be a date in YYYY-MM-DD format").optional(),
+  expiresBefore: z.iso.date("must be a date in YYYY-MM-DD format").optional(),
+  modality: z.enum(["SMALL_MOLECULE", "PEPTIDE", "OLIGONUCLEOTIDE", "MONOCLONAL_ANTIBODY", "OTHER"]).optional(),
+  /** Exact match against Drug.drugClass (e.g. "Statin"), not a substring search. */
+  drugClass: z.string().trim().min(1).max(100).optional(),
+  applicationType: z.enum(["NDA", "ANDA", "BLA"]).optional(),
+  /** Exact match against Drug.dosageForm (e.g. "TABLET"). See GET /api/drugs/filter-options for the current vocabulary. */
+  dosageForm: z.string().trim().min(1).max(100).optional(),
   sort: z.enum(["entry_asc", "entry_desc"]).default("entry_asc"),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
@@ -89,6 +104,10 @@ const DrugCoreFields = {
   strength: z.string(),
   approvalDate: z.iso.date().nullable(),
   company: CompanySchema,
+  /** Best-effort structural classification — see src/lib/classification/. */
+  modality: z.enum(["SMALL_MOLECULE", "PEPTIDE", "OLIGONUCLEOTIDE", "MONOCLONAL_ANTIBODY", "OTHER"]),
+  /** Best-effort mechanism/therapeutic-class tag (e.g. "Statin"), or null if unclassified. */
+  drugClass: z.string().nullable(),
 };
 
 // ---- Response bodies ---------------------------------------------------
@@ -123,6 +142,21 @@ export const DrugDetailResponseSchema = z.object({
   data: DrugDetailSchema,
 });
 
+// ---- Response body: GET /api/drugs/filter-options ---------------------
+
+// Powers the advanced search UI's select inputs. modality/applicationType
+// are the fixed enum vocabularies; drugClass/dosageForm are open-ended (or,
+// for dosageForm, simply too numerous — 100+ distinct values — to hardcode)
+// so those two are the actual distinct values currently present in the
+// data, not a fixed list.
+export const FilterOptionsSchema = z.object({
+  modalities: z.array(z.object({ value: z.string(), label: z.string() })),
+  drugClasses: z.array(z.string()),
+  applicationTypes: z.array(z.string()),
+  dosageForms: z.array(z.string()),
+});
+
 export type DrugSummary = z.infer<typeof DrugSummarySchema>;
 export type DrugDetail = z.infer<typeof DrugDetailSchema>;
 export type GenericEntryEstimate = z.infer<typeof GenericEntryEstimateSchema>;
+export type FilterOptions = z.infer<typeof FilterOptionsSchema>;

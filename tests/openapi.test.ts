@@ -9,16 +9,28 @@ describe("buildOpenApiDocument", () => {
     expect(doc.info.title).toBe("Patent Horizon API");
   });
 
-  it("documents both drug endpoints", () => {
+  it("documents all drug endpoints", () => {
     expect(Object.keys(doc.paths)).toEqual(
-      expect.arrayContaining(["/api/drugs", "/api/drugs/{id}"]),
+      expect.arrayContaining(["/api/drugs", "/api/drugs/{id}", "/api/drugs/filter-options"]),
     );
   });
 
   it("lists every ListDrugsQuery param with a schema", () => {
     const params = doc.paths["/api/drugs"].get.parameters;
     const names = params.map((p) => p.name);
-    expect(names).toEqual(["q", "withinDays", "sort", "limit", "offset"]);
+    expect(names).toEqual([
+      "q",
+      "withinDays",
+      "expiresAfter",
+      "expiresBefore",
+      "modality",
+      "drugClass",
+      "applicationType",
+      "dosageForm",
+      "sort",
+      "limit",
+      "offset",
+    ]);
     for (const p of params) {
       expect(p.schema).toBeTypeOf("object");
     }

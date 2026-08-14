@@ -1,7 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
+import { MODALITY_LABELS, type DrugModality } from "@/lib/classification/modality";
+import { DRUG_CLASS_LABELS } from "@/lib/classification/drugClass";
 import type { ListDrugsQuery } from "./schemas";
-import type { DrugDetail, DrugSummary, GenericEntryEstimate } from "./schemas";
+import type { DrugDetail, DrugSummary, FilterOptions, GenericEntryEstimate } from "./schemas";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -29,6 +31,8 @@ interface DrugListRow {
   route: string;
   strength: string;
   approvalDate: Date | null;
+  modality: "SMALL_MOLECULE" | "PEPTIDE" | "OLIGONUCLEOTIDE" | "MONOCLONAL_ANTIBODY" | "OTHER";
+  drugClass: string | null;
   companyId: string;
   companyName: string;
   estimatedGenericEntryDate: Date | null;
@@ -49,10 +53,32 @@ export interface ListDrugsResult {
 // every drug's patents into JS to do it. `count(*) OVER()` gets the total
 // matching row count in the same query instead of a second round trip.
 export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult> {
-  const { q, withinDays, sort, limit, offset } = query;
+  const {
+    q,
+    withinDays,
+    expiresAfter,
+    expiresBefore,
+    modality,
+    drugClass,
+    applicationType,
+    dosageForm,
+    sort,
+    limit,
+    offset,
+  } = query;
 
   const searchPattern = q ? `%${escapeLikePattern(q)}%` : null;
   const horizonDate = withinDays != null ? new Date(Date.now() + withinDays * MS_PER_DAY) : null;
+  // Date-only inputs from the UI's range pickers — the lower bound is
+  // midnight of that day, the upper bound is the last instant of that day,
+  // so a single-day range (after=before=2026-01-01) still matches an
+  // estimate that falls anywhere within that calendar day.
+  const afterDate = expiresAfter ? new Date(`${expiresAfter}T00:00:00.000Z`) : null;
+  const beforeDate = expiresBefore ? new Date(`${expiresBefore}T23:59:59.999Z`) : null;
+  const modalityValue = modality ?? null;
+  const drugClassValue = drugClass ?? null;
+  const applicationTypeValue = applicationType ?? null;
+  const dosageFormValue = dosageForm ?? null;
   const orderDirection = sort === "entry_desc" ? Prisma.raw("DESC") : Prisma.raw("ASC");
 
   const rows = await prisma.$queryRaw<DrugListRow[]>`
@@ -81,6 +107,8 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
       d.route,
       d.strength,
       d."approvalDate",
+      d.modality,
+      d."drugClass",
       c.id AS "companyId",
       c.name AS "companyName",
       h.estimated_generic_entry_date AS "estimatedGenericEntryDate",
@@ -92,10 +120,17 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
     JOIN horizon h ON h.id = d.id
     WHERE h.estimated_generic_entry_date IS NOT NULL
       AND (${horizonDate}::timestamp IS NULL OR h.estimated_generic_entry_date <= ${horizonDate}::timestamp)
+      AND (${afterDate}::timestamp IS NULL OR h.estimated_generic_entry_date >= ${afterDate}::timestamp)
+      AND (${beforeDate}::timestamp IS NULL OR h.estimated_generic_entry_date <= ${beforeDate}::timestamp)
+      AND (${modalityValue}::text IS NULL OR d.modality = ${modalityValue}::"DrugModality")
+      AND (${drugClassValue}::text IS NULL OR d."drugClass" = ${drugClassValue})
+      AND (${applicationTypeValue}::text IS NULL OR d."applicationType" = ${applicationTypeValue}::"ApplicationType")
+      AND (${dosageFormValue}::text IS NULL OR d."dosageForm" = ${dosageFormValue})
       AND (
         ${searchPattern}::text IS NULL
         OR d."brandName" ILIKE ${searchPattern}
         OR d."genericName" ILIKE ${searchPattern}
+        OR c.name ILIKE ${searchPattern}
       )
     ORDER BY h.estimated_generic_entry_date ${orderDirection}
     LIMIT ${limit} OFFSET ${offset}
@@ -114,6 +149,8 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
     route: row.route,
     strength: row.strength,
     approvalDate: toDateString(row.approvalDate),
+    modality: row.modality,
+    drugClass: row.drugClass,
     company: { id: row.companyId, name: row.companyName },
     estimatedGenericEntryDate: toDateString(row.estimatedGenericEntryDate),
     patentCount: Number(row.patentCount),
@@ -193,6 +230,8 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
     route: drug.route,
     strength: drug.strength,
     approvalDate: toDateString(drug.approvalDate),
+    modality: drug.modality,
+    drugClass: drug.drugClass,
     company: { id: drug.company.id, name: drug.company.name },
     patents: drug.patents.map((p) => ({
       id: p.id,
@@ -215,5 +254,33 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
       expirationDate: toDateString(e.expirationDate),
     })),
     genericEntryEstimate: computeGenericEntryEstimate(drug.patents, drug.exclusivities),
+  };
+}
+
+// Powers the advanced search UI's filter selects. modality and
+// applicationType are small fixed vocabularies (enums), so every possible
+// value is offered — including ones with zero current matches, like
+// MONOCLONAL_ANTIBODY and BLA (Orange Book doesn't cover biologics; see
+// README) — the same way the modality classifier itself is designed to be
+// ready the day that data shows up, rather than silently hiding the option.
+// drugClass is likewise a fixed vocabulary we control (the classifier's own
+// label set). dosageForm is genuinely open-ended free text from the source
+// data (100+ distinct values), so that one is queried live rather than
+// hardcoded.
+export async function getFilterOptions(): Promise<FilterOptions> {
+  const dosageFormRows = await prisma.drug.findMany({
+    distinct: ["dosageForm"],
+    select: { dosageForm: true },
+    orderBy: { dosageForm: "asc" },
+  });
+
+  return {
+    modalities: (Object.entries(MODALITY_LABELS) as [DrugModality, string][]).map(([value, label]) => ({
+      value,
+      label,
+    })),
+    drugClasses: DRUG_CLASS_LABELS,
+    applicationTypes: ["NDA", "ANDA", "BLA"],
+    dosageForms: dosageFormRows.map((r) => r.dosageForm),
   };
 }

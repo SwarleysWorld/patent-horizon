@@ -1,4 +1,4 @@
-import { listDrugs } from "@/lib/drugs/queries";
+import { listDrugs, getFilterOptions } from "@/lib/drugs/queries";
 import { ListDrugsQuerySchema } from "@/lib/drugs/schemas";
 import { DrugsExplorer } from "@/components/drugs/DrugsExplorer";
 import { requireUser } from "@/lib/session";
@@ -28,7 +28,7 @@ export default async function Home({
 }) {
   await requireUser();
   const query = parseSearchParams(await searchParams);
-  const { data, pagination } = await listDrugs(query);
+  const [{ data, pagination }, filterOptions] = await Promise.all([listDrugs(query), getFilterOptions()]);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -38,7 +38,7 @@ export default async function Home({
           Ranked by estimated generic-entry date — soonest first.
         </p>
       </div>
-      <DrugsExplorer data={data} pagination={pagination} />
+      <DrugsExplorer data={data} pagination={pagination} filterOptions={filterOptions} />
     </div>
   );
 }

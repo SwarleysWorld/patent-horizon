@@ -490,11 +490,22 @@ excluded — nothing to report.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `q` | string, 1-200 chars | — | Substring match against brand or generic name, case-insensitive |
+| `q` | string, 1-200 chars | — | Substring match against brand name, generic name, or company name, case-insensitive |
 | `withinDays` | integer, 0-36500 | — | Only drugs whose estimate falls within this many days from now. No lower bound — already-past estimates are included too (still-actionable, already-open opportunities) |
+| `expiresAfter` / `expiresBefore` | date (`YYYY-MM-DD`) | — | Explicit generic-entry date-range bounds, inclusive. See [Advanced search](#advanced-search--drug-classification) below |
+| `modality` | enum | — | Exact match on structural drug type — see [Advanced search](#advanced-search--drug-classification) |
+| `drugClass` | string | — | Exact match on the best-effort mechanism/therapeutic tag (e.g. `"Statin"`) |
+| `applicationType` | `NDA` \| `ANDA` \| `BLA` | — | Exact match |
+| `dosageForm` | string | — | Exact match (e.g. `"TABLET"`) — see `GET /api/drugs/filter-options` for the current vocabulary |
 | `sort` | `entry_asc` \| `entry_desc` | `entry_asc` | Soonest-first by default |
 | `limit` | integer, 1-100 | 20 | Page size |
 | `offset` | integer, ≥0 | 0 | Pagination offset |
+
+All filters combine with AND. `withinDays` and `expiresAfter`/`expiresBefore`
+both filter the same underlying `estimatedGenericEntryDate` — they're not
+mutually exclusive, but a caller will typically use one or the other
+(`withinDays` for the UI's quick horizon chips, the explicit range for
+precise queries).
 
 ```bash
 curl "http://localhost:3000/api/drugs?withinDays=180&limit=10"
@@ -509,6 +520,7 @@ curl "http://localhost:3000/api/drugs?q=eliquis"
       "applicationType": "NDA", "applicationNumber": "NDA202155", "productNumber": "001",
       "dosageForm": "TABLET", "route": "ORAL", "strength": "2.5MG",
       "approvalDate": "2012-12-28",
+      "modality": "SMALL_MOLECULE", "drugClass": null,
       "company": { "id": "...", "name": "BRISTOL MYERS SQUIBB CO..." },
       "estimatedGenericEntryDate": "2031-08-24",
       "patentCount": 12, "exclusivityCount": 2
@@ -627,6 +639,103 @@ search matching (including the `%`-escaping case), every validation
 failure mode, and both success and 404 paths through the actual route
 handlers (not just the query functions underneath them).
 
+## Advanced search & drug classification
+
+Beyond the time-horizon and name search covered above, `/api/drugs` (and
+the "Advanced" panel in the web UI) supports narrowing results by
+structural drug type, therapeutic class, application type, dosage form, and
+an explicit generic-entry date range. Application type and dosage form come
+straight from the Orange Book source data. Modality and drug class don't —
+that data doesn't exist anywhere in the source, so it's derived.
+
+### How classification works
+
+`genericName` (the active-ingredient field) is classified two ways at
+ingestion time ([`src/lib/ingestion/orangeBook/load.ts`](src/lib/ingestion/orangeBook/load.ts)),
+using pharmaceutical naming-stem conventions ([INN/USAN](https://www.who.int/teams/health-product-and-policy-standards/inn) —
+the standardized suffix system drug names follow, e.g. every monoclonal
+antibody name ends in `-mab`, every statin in `-statin`):
+
+- **`modality`** ([`src/lib/classification/modality.ts`](src/lib/classification/modality.ts)) — a small,
+  fixed taxonomy: `SMALL_MOLECULE` (the default), `PEPTIDE`,
+  `OLIGONUCLEOTIDE`, `MONOCLONAL_ANTIBODY`, `OTHER`. Modeled as an enum
+  because the vocabulary is small and stable.
+- **`drugClass`** ([`src/lib/classification/drugClass.ts`](src/lib/classification/drugClass.ts)) — an
+  open-ended, best-effort mechanism/therapeutic tag (`"Statin"`, `"ACE
+  inhibitor"`, `"Kinase inhibitor"`, ...), nullable free text rather than an
+  enum, for the same reason `Exclusivity.code` is a free string: the real
+  vocabulary is larger and less reliably detectable than modality. A drug
+  can plausibly belong to more than one class; the schema stores one
+  best-effort tag, so the first matching rule (in priority order) wins.
+
+Both are **heuristics, not authoritative** — false negatives are possible
+for ingredients that don't follow standard INN naming. Every stem rule that
+shipped was checked against this project's real ~2,700 distinct
+`genericName` values before being added, specifically to catch coincidental
+suffix matches:
+
+- Naive substring matching on `-rsen` (the oligonucleotide stem) matched
+  **"ARSENIC TRIOXIDE"** — "arsenic" contains "rsen" mid-word but doesn't
+  *end* with it. Fixed by matching stems only as suffixes of individual
+  whitespace/punctuation-separated tokens
+  ([`tokenize.ts`](src/lib/classification/tokenize.ts)), never as a
+  substring anywhere in the raw string.
+- `-statin` alone would also tag **cilastatin** (a renal enzyme inhibitor,
+  unrelated to cholesterol), **nystatin** (an antifungal), and
+  **pentostatin** (an oncology drug) — real drugs that coincidentally end in
+  "statin" without being statins. Excluded explicitly per stem rule.
+
+Existing rows are backfilled with `npm run classify:drugs` (safe to re-run
+any time, e.g. after adding a new stem rule — it always recomputes from the
+current `genericName`, never accumulates drift; supports `--dry-run` and
+`--limit N` for previewing before writing).
+
+### A real data limitation, not a bug: zero monoclonal antibodies
+
+Searching `modality=MONOCLONAL_ANTIBODY` currently returns **zero results**.
+This is expected, not a classifier failure: monoclonal antibodies are
+biologics, regulated under a BLA (Biologics License Application) rather
+than an NDA/ANDA, and FDA tracks BLA patent/exclusivity data in a *separate*
+publication — the **Purple Book** — which this project does not ingest (see
+[Data ingestion](#data-ingestion-fda-orange-book)). The `-mab` stem rule and
+the `MONOCLONAL_ANTIBODY` enum value are both still shipped, deliberately,
+so the classifier and the advanced-search filter vocabulary are ready the
+day a Purple Book source ever gets ingested — the alternative (removing the
+option because it's currently empty) would silently hide that this is a
+known, documented gap rather than an intentional absence. The same
+reasoning applies to `applicationType=BLA`, which is also always empty
+today.
+
+### `GET /api/drugs/filter-options` — current filter vocabulary
+
+Powers the advanced-search UI's select inputs. `modalities` and
+`applicationTypes` return every possible enum value (including
+`MONOCLONAL_ANTIBODY` / `BLA`, per above); `drugClasses` returns the fixed
+set of class labels the classifier can produce; `dosageForm` is genuinely
+open-ended free text from the source (117 distinct values as of writing),
+so that one is a live `DISTINCT` query against the current data rather than
+a hardcoded list.
+
+```bash
+curl "http://localhost:3000/api/drugs/filter-options"
+```
+```json
+{
+  "data": {
+    "modalities": [
+      { "value": "SMALL_MOLECULE", "label": "Small molecule" },
+      { "value": "PEPTIDE", "label": "Peptide" },
+      { "value": "OLIGONUCLEOTIDE", "label": "Oligonucleotide" },
+      { "value": "MONOCLONAL_ANTIBODY", "label": "Monoclonal antibody" },
+      { "value": "OTHER", "label": "Other / complex molecule" }
+    ],
+    "drugClasses": ["Statin", "Angiotensin receptor blocker (ARB)", "..."],
+    "applicationTypes": ["NDA", "ANDA", "BLA"],
+    "dosageForms": ["CAPSULE", "CAPSULE, EXTENDED RELEASE", "..."]
+  }
+}
+```
+
 ## Web UI
 
 The primary screen — `/` — is the thing a pharma business analyst is meant
@@ -670,6 +779,14 @@ page rather than buried in a table.
   reads a single date.
 - **`/` focuses search** (unless already typing somewhere) — a small
   power-user affordance for a screen meant to be used many times a day.
+- **The Advanced panel follows the same URL-is-truth pattern** as the rest
+  of the screen — modality/drugClass/applicationType/dosageForm/date-range
+  are just more query params, so an advanced-filtered view is bookmarkable
+  like any other. The panel auto-expands on load if any of those params are
+  already set (e.g. from a shared link), and its toggle button shows a
+  count badge of how many advanced filters are active. Select options come
+  from `GET /api/drugs/filter-options`, fetched server-side alongside the
+  drug list itself — no client-side waterfall for the filter UI either.
 - **A real bug this surfaced:** `notFound()` inside a route wrapped by
   `loading.tsx` can't actually set a `404` status — by the time
   `notFound()` runs, the Suspense fallback has already started streaming
@@ -932,6 +1049,8 @@ npm run ingest:orange-book            # download + load the current FDA Orange B
 npm run ingest:orange-book -- --file ./orangebook.zip   # load from a local zip instead
 npm run enrich:pta                    # enrich all unenriched patents with USPTO PTA data
 npm run enrich:pta -- --limit 20      # sample run: next 20 patents only
+npm run classify:drugs                # backfill modality/drugClass for existing drugs
+npm run classify:drugs -- --dry-run   # preview counts without writing
 npm test              # run the test suite once (needs patent_horizon_test — see "API" section)
 npm run test:watch    # test suite in watch mode
 npm run test:coverage # test suite with coverage report

@@ -74,6 +74,16 @@ describe("getDrugById (query layer)", () => {
     const alpha = await getDrugById(fx.alphaDrugId);
     expect(alpha!.company.name).toBe("Acme Pharma");
   });
+
+  it("includes modality and drugClass", async () => {
+    const beta = await getDrugById(fx.betaMedId);
+    expect(beta!.modality).toBe("SMALL_MOLECULE");
+    expect(beta!.drugClass).toBe("Statin");
+
+    const gamma = await getDrugById(fx.gammaCureId);
+    expect(gamma!.modality).toBe("PEPTIDE");
+    expect(gamma!.drugClass).toBeNull();
+  });
 });
 
 describe("GET /api/drugs/[id] (route layer)", () => {

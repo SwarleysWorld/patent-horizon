@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { classifyModality } from "@/lib/classification/modality";
+import { classifyDrugClass } from "@/lib/classification/drugClass";
 import type { ParsedExclusivity, ParsedPatent, ParsedProduct, RowIssue } from "./types";
 
 // Keeps concurrent DB round-trips bounded well under the `pg` pool's
@@ -111,6 +113,13 @@ export async function loadOrangeBookData(
       });
       return;
     }
+    // Classified from genericName at ingestion time (not just once via a
+    // backfill script) so a re-run always reflects the current classifier
+    // — including picking up improvements if the stem rules are extended
+    // later, the same way any other re-ingested field self-heals.
+    const modality = classifyModality(product.genericName);
+    const drugClass = classifyDrugClass(product.genericName);
+
     try {
       const drug = await prisma.drug.upsert({
         where: {
@@ -128,6 +137,8 @@ export async function loadOrangeBookData(
           route: product.route,
           strength: product.strength,
           approvalDate: product.approvalDate,
+          modality,
+          drugClass,
         },
         create: {
           brandName: product.brandName,
@@ -140,6 +151,8 @@ export async function loadOrangeBookData(
           route: product.route,
           strength: product.strength,
           approvalDate: product.approvalDate,
+          modality,
+          drugClass,
         },
       });
       drugIdByKey.set(product.drugKey, drug.id);

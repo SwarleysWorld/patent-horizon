@@ -12,6 +12,7 @@
     "db:studio": "prisma studio",
     "ingest:orange-book": "tsx scripts/ingest-orange-book.ts",
     "enrich:pta": "tsx scripts/enrich-pta.ts",
+    "classify:drugs": "tsx scripts/classify-drugs.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

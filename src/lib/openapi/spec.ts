@@ -3,6 +3,7 @@ import {
   ListDrugsQuerySchema,
   ListDrugsResponseSchema,
   DrugDetailResponseSchema,
+  FilterOptionsSchema,
 } from "@/lib/drugs/schemas";
 import { ApiErrorSchema } from "@/lib/api/errors";
 
@@ -83,6 +84,24 @@ export function buildOpenApiDocument(baseUrl: string) {
               content: { "application/json": { schema: jsonSchema(DrugDetailResponseSchema) } },
             },
             "404": errorResponseObject,
+            "500": errorResponseObject,
+          },
+        },
+      },
+      "/api/drugs/filter-options": {
+        get: {
+          summary: "Advanced search filter vocabulary",
+          description:
+            "The current set of values for each advanced-search filter: the fixed " +
+            "modality/applicationType enums (every possible value, even ones with zero " +
+            "current matches), the fixed drugClass label set, and the dosageForm values " +
+            "actually present in the data (open-ended free text, so this list reflects reality " +
+            "rather than a hardcoded guess).",
+          responses: {
+            "200": {
+              description: "Filter option vocabulary.",
+              content: { "application/json": { schema: jsonSchema(z.object({ data: FilterOptionsSchema })) } },
+            },
             "500": errorResponseObject,
           },
         },
