@@ -1,0 +1,325 @@
+// Prisma schema for Patent Horizon
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// FDA application types. This vocabulary is fixed by statute and does not
+// change, so it's safe to model as an enum (unlike patent/exclusivity codes
+// below, which are deliberately kept as open strings).
+enum ApplicationType {
+  NDA
+  ANDA
+  BLA
+}
+
+// The company that holds an FDA application (innovator or generic applicant).
+model Company {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  drugs Drug[]
+}
+
+// One approved drug PRODUCT: a specific brand/generic name + dosage form +
+// route + strength under one FDA application. This mirrors the FDA Orange
+// Book's own "Products" file (Appl_Type, Appl_No, Product_No, Trade_Name,
+// Ingredient, DF;Route, Strength, Applicant) row-for-row, since that's the
+// primary ingestion source and grain mismatches there cause the most pain.
+model Drug {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  brandName   String
+  genericName String // active ingredient(s) as free text, e.g. "amlodipine and valsartan"
+
+  applicationType   ApplicationType
+  applicationNumber String // e.g. "NDA020702"
+  productNumber     String // e.g. "001" — distinguishes strengths/forms within one application
+
+  dosageForm String // e.g. "TABLET"
+  route      String // e.g. "ORAL"
+  strength   String // e.g. "10MG"
+
+  approvalDate DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  patents          Patent[]
+  exclusivities    Exclusivity[]
+  ingestionRecords IngestionRecord[]
+
+  @@unique([applicationNumber, productNumber])
+  @@index([brandName])
+  @@index([genericName])
+  @@index([companyId])
+}
+
+// A patent listed against a drug product.
+//
+// nominalExpiryDate  = the legally listed / face-value expiry (as filed,
+//                       or as printed/originally listed before adjustment).
+// effectiveExpiryDate = our best-known actual enforceable expiry, after
+//                       Patent Term Adjustment, Patent Term Extension, and
+//                       terminal disclaimers are applied.
+// expiryAdjustmentDays = signed day delta between the two, when known.
+//                       NULL means "adjustment not yet confirmed" (distinct
+//                       from 0, which means "confirmed, no adjustment").
+//
+// See README.md "Data model" section for the full rationale.
+model Patent {
+  id     String @id @default(cuid())
+  drugId String
+  drug   Drug   @relation(fields: [drugId], references: [id], onDelete: Cascade)
+
+  patentNumber String
+
+  // Mirrors the Orange Book's own Drug_Substance_Flag / Drug_Product_Flag —
+  // a single patent can cover both, so these are independent booleans
+  // rather than a single lossy "type" enum.
+  coversDrugSubstance Boolean @default(false)
+  coversDrugProduct   Boolean @default(false)
+  // FDA "patent use code" text; empty string unless this is a
+  // method-of-use listing. Deliberately NOT nullable, even though "no use
+  // code" is semantically a null: Postgres treats every NULL as distinct
+  // in a unique constraint, so a nullable column here would make the
+  // @@unique below unusable for idempotent upserts on the (very common)
+  // rows with no use code — Prisma's generated compound-unique input type
+  // requires non-null members for exactly this reason. "" is the sentinel.
+  useCode             String  @default("")
+
+  filingDate DateTime?
+
+  nominalExpiryDate     DateTime
+  effectiveExpiryDate   DateTime
+  expiryAdjustmentDays  Int?
+  hasTerminalDisclaimer Boolean  @default(false)
+
+  submittedDate DateTime? // date the applicant submitted this patent for Orange Book listing
+  delistedAt    DateTime? // set when a source reports this patent removed from the listing
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ingestionRecords IngestionRecord[]
+
+  // Matches the Orange Book's own natural key. Deliberately does NOT
+  // include the expiry dates, because those are exactly the mutable fields
+  // ingestion should correct in place (see README).
+  @@unique([drugId, patentNumber, useCode])
+  @@index([effectiveExpiryDate])
+  @@index([nominalExpiryDate])
+}
+
+// An FDA-granted regulatory exclusivity (separate legal mechanism from
+// patents — e.g. New Chemical Entity, Orphan Drug, Pediatric). FDA's
+// exclusivity code vocabulary is large and grows over time, so `code` is
+// kept as a raw string (from the source) rather than a rigid enum — an
+// unrecognized code should never break ingestion.
+model Exclusivity {
+  id     String @id @default(cuid())
+  drugId String
+  drug   Drug   @relation(fields: [drugId], references: [id], onDelete: Cascade)
+
+  code        String // raw FDA exclusivity code, e.g. "NCE", "ODE-123", "PED"
+  description String?
+
+  grantedDate    DateTime?
+  expirationDate DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ingestionRecords IngestionRecord[]
+
+  // Matches the source's own natural key (Appl_No + Product_No + Code +
+  // Date). Unlike Patent, the date IS part of the key here: FDA doesn't
+  // "correct" an exclusivity date in place the way a PTA figure gets
+  // corrected — a changed date represents a new determination.
+  @@unique([drugId, code, expirationDate])
+  @@index([expirationDate])
+}
+
+// An external system or process that supplies data: e.g. "FDA Orange Book",
+// "USPTO Patent Term Calculator", "Manual Entry".
+model DataSource {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  url       String?
+  createdAt DateTime @default(now())
+
+  ingestionRecords IngestionRecord[]
+  ingestionRuns    IngestionRun[]
+}
+
+enum IngestionRunStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+// One row per pipeline execution — the run-level counterpart to
+// IngestionRecord's per-entity log. Answers "did last night's ingestion
+// work, and what happened" without grepping log files.
+model IngestionRun {
+  id       String     @id @default(cuid())
+  sourceId String
+  source   DataSource @relation(fields: [sourceId], references: [id])
+
+  status     IngestionRunStatus @default(RUNNING)
+  startedAt  DateTime           @default(now())
+  finishedAt DateTime?
+
+  drugsUpserted         Int @default(0)
+  patentsUpserted       Int @default(0)
+  exclusivitiesUpserted Int @default(0)
+  rowsSkipped           Int @default(0)
+
+  // Structured details: per-file row counts, sample skipped-row reasons,
+  // error message on failure. Free-form on purpose — this is for humans
+  // debugging a run, not for querying.
+  summary Json?
+
+  @@index([sourceId, startedAt])
+}
+
+// Append-only log of every time a Drug/Patent/Exclusivity row was ingested
+// or manually verified from a given source. This is the answer to "what's
+// stale": the most recent row per (entity, source) tells you when it was
+// last confirmed true. Kept as full history (not a single denormalized
+// "lastVerifiedAt" column) so disagreeing sources and value changes over
+// time stay auditable.
+//
+// Exactly one of drugId / patentId / exclusivityId must be set — enforced
+// by a CHECK constraint added by hand in the migration SQL (Prisma's schema
+// language has no first-class check-constraint support yet). If you ever
+// regenerate this migration from scratch, re-add that constraint.
+model IngestionRecord {
+  id String @id @default(cuid())
+
+  sourceId String
+  source   DataSource @relation(fields: [sourceId], references: [id])
+
+  drugId String?
+  drug   Drug?   @relation(fields: [drugId], references: [id], onDelete: Cascade)
+
+  patentId String?
+  patent   Patent? @relation(fields: [patentId], references: [id], onDelete: Cascade)
+
+  exclusivityId String?
+  exclusivity   Exclusivity? @relation(fields: [exclusivityId], references: [id], onDelete: Cascade)
+
+  externalRef String? // the source's own id/url for this record, for traceability + dedupe
+  verifiedAt  DateTime @default(now())
+  changeNote  String? // optional human-readable note of what changed, if anything
+  rawPayload  Json? // optional raw snapshot from the source, for debugging ingestion
+
+  createdAt DateTime @default(now())
+
+  @@index([drugId, verifiedAt])
+  @@index([patentId, verifiedAt])
+  @@index([exclusivityId, verifiedAt])
+  @@index([sourceId, verifiedAt])
+}
+
+// ---------------------------------------------------------------------
+// Auth (Better Auth). Schema below this line is generated by
+// `npx auth generate` from src/lib/auth.ts, not hand-written — re-run that
+// command (diff before applying) rather than editing these models by hand
+// if the auth config ever changes (e.g. a new plugin). Table names are
+// lowercase (`@@map("user")` etc.) because that's Better Auth's own
+// convention across all its adapters; left as generated rather than
+// renamed to match this file's usual PascalCase, so future regenerations
+// stay a clean diff.
+//
+// `role` ("admin" | "user", nullable — see databaseHooks in auth.ts, which
+// always sets it explicitly on signup) is the entire access-tier system:
+// "admin" is presented in the product as "Analyst" (elevated — can manage
+// other users from /team), "user" as "Subscriber" (the paying-customer
+// tier — read access to the product). See src/lib/session.ts.
+
+model User {
+  id            String    @id
+  name          String
+  email         String
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  role          String?
+  banned        Boolean?  @default(false)
+  banReason     String?
+  banExpires    DateTime?
+  sessions      Session[]
+  accounts      Account[]
+
+  @@unique([email])
+  @@map("user")
+}
+
+model Session {
+  id             String   @id
+  expiresAt      DateTime
+  token          String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  ipAddress      String?
+  userAgent      String?
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  impersonatedBy String?
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+// One row per login method for a user. For our email/password-only setup
+// there's exactly one Account per User (providerId "credential", password
+// hash here) — the table exists as a generic join because Better Auth
+// supports linking multiple sign-in methods (e.g. social) to one user.
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+// Short-lived tokens for flows we don't use yet (email verification,
+// password reset) — present because Better Auth's core schema always
+// includes it, empty in practice until those flows are built.
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}

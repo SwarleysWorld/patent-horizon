@@ -1,0 +1,128 @@
+import { z } from "zod";
+
+// ---- Query params: GET /api/drugs -----------------------------------
+
+export const ListDrugsQuerySchema = z.object({
+  /** Substring match against brand or generic name. Case-insensitive. */
+  q: z
+    .string()
+    .trim()
+    .min(1, "must not be empty")
+    .max(200, "must be 200 characters or fewer")
+    .optional(),
+  /**
+   * Only include drugs whose estimated generic-entry date is within this
+   * many days from now. No lower bound — already-open opportunities
+   * (entry date in the past) are included too, since those can still be
+   * actionable. Omit to see everything, soonest first.
+   */
+  withinDays: z.coerce
+    .number()
+    .int("must be a whole number")
+    .min(0, "must be 0 or greater")
+    .max(36500, "must be 100 years or fewer")
+    .optional(),
+  sort: z.enum(["entry_asc", "entry_desc"]).default("entry_asc"),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+export type ListDrugsQuery = z.infer<typeof ListDrugsQuerySchema>;
+
+// ---- Query params: GET /api/drugs/[id] -------------------------------
+
+export const DrugIdParamSchema = z.object({
+  id: z.string().min(1, "must not be empty"),
+});
+
+// ---- Shared building blocks -------------------------------------------
+
+export const CompanySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+
+export const PatentSchema = z.object({
+  id: z.string(),
+  patentNumber: z.string(),
+  useCode: z.string(),
+  coversDrugSubstance: z.boolean(),
+  coversDrugProduct: z.boolean(),
+  filingDate: z.iso.date().nullable(),
+  nominalExpiryDate: z.iso.date(),
+  effectiveExpiryDate: z.iso.date(),
+  expiryAdjustmentDays: z.number().int().nullable(),
+  submittedDate: z.iso.date().nullable(),
+  delistedAt: z.iso.date().nullable(),
+});
+
+export const ExclusivitySchema = z.object({
+  id: z.string(),
+  code: z.string(),
+  description: z.string().nullable(),
+  grantedDate: z.iso.date().nullable(),
+  expirationDate: z.iso.date(),
+});
+
+// The product's whole reason to exist: the best current estimate of when a
+// generic competitor can enter, and — critically — a transparent
+// explanation of which specific patent or exclusivity is actually setting
+// that date, so it's never a black box.
+export const GenericEntryEstimateSchema = z.object({
+  date: z.iso.date().nullable(),
+  controllingType: z.enum(["patent", "exclusivity"]).nullable(),
+  controllingId: z.string().nullable(),
+  /** Human-readable label for the controlling item, e.g. "Patent 6967208" or "Exclusivity NCE". */
+  controllingLabel: z.string().nullable(),
+  basis: z.string(),
+});
+
+const DrugCoreFields = {
+  id: z.string(),
+  brandName: z.string(),
+  genericName: z.string(),
+  applicationType: z.enum(["NDA", "ANDA", "BLA"]),
+  applicationNumber: z.string(),
+  productNumber: z.string(),
+  dosageForm: z.string(),
+  route: z.string(),
+  strength: z.string(),
+  approvalDate: z.iso.date().nullable(),
+  company: CompanySchema,
+};
+
+// ---- Response bodies ---------------------------------------------------
+
+export const DrugSummarySchema = z.object({
+  ...DrugCoreFields,
+  estimatedGenericEntryDate: z.iso.date().nullable(),
+  patentCount: z.number().int(),
+  exclusivityCount: z.number().int(),
+});
+
+export const DrugDetailSchema = z.object({
+  ...DrugCoreFields,
+  patents: z.array(PatentSchema),
+  exclusivities: z.array(ExclusivitySchema),
+  genericEntryEstimate: GenericEntryEstimateSchema,
+});
+
+export const PaginationSchema = z.object({
+  limit: z.number().int(),
+  offset: z.number().int(),
+  total: z.number().int(),
+  hasMore: z.boolean(),
+});
+
+export const ListDrugsResponseSchema = z.object({
+  data: z.array(DrugSummarySchema),
+  pagination: PaginationSchema,
+});
+
+export const DrugDetailResponseSchema = z.object({
+  data: DrugDetailSchema,
+});
+
+export type DrugSummary = z.infer<typeof DrugSummarySchema>;
+export type DrugDetail = z.infer<typeof DrugDetailSchema>;
+export type GenericEntryEstimate = z.infer<typeof GenericEntryEstimateSchema>;
