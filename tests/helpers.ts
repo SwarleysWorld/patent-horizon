@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 
 export async function resetDb() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE TABLE "IngestionRecord", "IngestionRun", "Patent", "Exclusivity", "Drug", "Company", "DataSource" RESTART IDENTITY CASCADE`,
+    `TRUNCATE TABLE "IngestionRecord", "IngestionRun", "Patent", "Exclusivity", "BiologicProduct", "Drug", "Company", "DataSource" RESTART IDENTITY CASCADE`,
   );
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE "session", "account", "user", "verification" RESTART IDENTITY CASCADE`);
 }

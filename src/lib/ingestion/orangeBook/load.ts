@@ -1,30 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { classifyModality } from "@/lib/classification/modality";
 import { classifyDrugClass } from "@/lib/classification/drugClass";
+import { DEFAULT_INGESTION_CONCURRENCY, dedupeByKey, mapWithConcurrency } from "../shared";
 import type { ParsedExclusivity, ParsedPatent, ParsedProduct, RowIssue } from "./types";
 
-// Keeps concurrent DB round-trips bounded well under the `pg` pool's
-// default max (10), so this can run alongside other connections without
-// starving the pool.
-const CONCURRENCY = 6;
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  async function worker() {
-    while (true) {
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
+const CONCURRENCY = DEFAULT_INGESTION_CONCURRENCY;
 
 export interface LoadResult {
   drugsUpserted: number;
@@ -36,25 +16,8 @@ export interface LoadResult {
   ingestionRecordsCreated: number;
 }
 
-// The source files contain literal duplicate rows (same natural key,
-// byte-for-byte) — confirmed in exclusivity.txt on real data. Two
-// concurrent upsert() calls racing on the same not-yet-existing key can
-// both attempt an INSERT and one loses with a unique-violation, since
-// upsert isn't atomic across concurrent callers. Deduping by natural key
-// before the concurrent pass avoids the race entirely, and is also just
-// correct: a row repeated verbatim in the source carries no extra
-// information the second occurrence would add.
-function dedupeByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
-  const seen = new Set<string>();
-  const result: T[] = [];
-  for (const item of items) {
-    const key = keyOf(item);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(item);
-  }
-  return result;
-}
+// dedupeByKey: source files can contain literal duplicate rows — see
+// src/lib/ingestion/shared.ts for the full rationale.
 
 export async function loadOrangeBookData(
   parsed: { products: ParsedProduct[]; patents: ParsedPatent[]; exclusivities: ParsedExclusivity[] },
@@ -117,7 +80,7 @@ export async function loadOrangeBookData(
     // backfill script) so a re-run always reflects the current classifier
     // — including picking up improvements if the stem rules are extended
     // later, the same way any other re-ingested field self-heals.
-    const modality = classifyModality(product.genericName);
+    const modality = classifyModality(product.genericName, "SMALL_MOLECULE");
     const drugClass = classifyDrugClass(product.genericName);
 
     try {

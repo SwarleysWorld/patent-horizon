@@ -28,17 +28,18 @@ export default async function Home({
 }) {
   await requireUser();
   const query = parseSearchParams(await searchParams);
-  const [{ data, pagination }, filterOptions] = await Promise.all([listDrugs(query), getFilterOptions()]);
+  const [{ data, pagination, facets }, filterOptions] = await Promise.all([listDrugs(query), getFilterOptions()]);
 
   return (
     <div className="flex flex-1 flex-col">
       <div className="border-b border-zinc-200 px-4 py-4 dark:border-zinc-800">
         <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Upcoming Patent Expirations</h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Ranked by estimated generic-entry date — soonest first.
+          Small-molecule drugs (FDA Orange Book) and biologics (FDA Purple Book), ranked by estimated generic-entry
+          date — soonest first.
         </p>
       </div>
-      <DrugsExplorer data={data} pagination={pagination} filterOptions={filterOptions} />
+      <DrugsExplorer data={data} pagination={pagination} filterOptions={filterOptions} facets={facets} />
     </div>
   );
 }

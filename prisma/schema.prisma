@@ -19,31 +19,65 @@ enum ApplicationType {
   BLA
 }
 
-// Coarse drug "modality" — the structural category of the therapy, not its
+// Coarse "modality" — the structural category of a therapy, not its
 // mechanism/indication. Classified heuristically from the active
-// ingredient's name via INN/USAN naming-stem conventions (see
-// src/lib/classification/modality.ts) — not authoritative, and — this
-// matters — the Orange Book source data contains essentially zero
-// MONOCLONAL_ANTIBODY entries, because biologics are regulated under BLA
-// and tracked in FDA's separate "Purple Book," which isn't ingested here.
-// A fixed, small, stable vocabulary (unlike drugClass below), so an enum
-// fits the project's established convention for that kind of field.
-enum DrugModality {
+// ingredient / proper name via real WHO INN / USAN naming-stem conventions
+// (see src/lib/classification/modality.ts) — not authoritative. Shared by
+// both Drug (small molecules, Orange Book) and BiologicProduct (Purple
+// Book) — named without a "Drug" prefix for exactly that reason.
+//
+// UNCLASSIFIED is distinct from SMALL_MOLECULE: "no stem matched" is only
+// evidence of small-molecule chemistry for Orange Book's NDA/ANDA
+// regulatory pathway (see classifyModality's `fallback` parameter) — for
+// biologics, an unmatched name must never be assumed small-molecule, so it
+// lands here instead. CELL_THERAPY / GENE_THERAPY / VACCINE have no
+// small-molecule analogue; MONOCLONAL_ANTIBODY now actually matches real
+// rows once Purple Book is ingested (previously always zero — Orange Book
+// alone doesn't cover biologics, which are regulated under BLA).
+enum Modality {
   SMALL_MOLECULE
   PEPTIDE
   OLIGONUCLEOTIDE
   MONOCLONAL_ANTIBODY
+  CELL_THERAPY
+  GENE_THERAPY
+  VACCINE
   OTHER
+  UNCLASSIFIED
 }
 
-// The company that holds an FDA application (innovator or generic applicant).
+// FDA BPCIA license pathway for a biologic product — a fixed, statutory
+// vocabulary, so an enum (unlike Exclusivity.code below).
+// STANDARD       = 351(a) — includes both true reference products and
+//                  unrelated standalone biologics (e.g. vaccines) with no
+//                  biosimilar filed against them.
+// BIOSIMILAR     = 351(k) biosimilar.
+// INTERCHANGEABLE = 351(k) interchangeable.
+enum LicenseType {
+  STANDARD
+  BIOSIMILAR
+  INTERCHANGEABLE
+}
+
+// Which FDA center regulates the product — CDER (small molecules plus most
+// therapeutic biologics) vs CBER (vaccines, blood products, cellular and
+// gene therapies). Purple Book covers both in one file.
+enum BiologicCenter {
+  CDER
+  CBER
+}
+
+// The company that holds an FDA application (innovator or generic
+// applicant/BLA holder) — shared across both Orange Book Drugs and Purple
+// Book BiologicProducts, matched by name the same way for both.
 model Company {
   id        String   @id @default(cuid())
   name      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  drugs Drug[]
+  drugs            Drug[]
+  biologicProducts BiologicProduct[]
 }
 
 // One approved drug PRODUCT: a specific brand/generic name + dosage form +
@@ -75,7 +109,7 @@ model Drug {
   // an enum because that vocabulary is large, growing, and nowhere near as
   // reliably detectable as modality (matches the reasoning already applied
   // to Exclusivity.code).
-  modality  DrugModality @default(SMALL_MOLECULE)
+  modality  Modality @default(SMALL_MOLECULE)
   drugClass String?
 
   approvalDate DateTime?
@@ -96,10 +130,84 @@ model Drug {
   @@index([dosageForm])
 }
 
-// A patent listed against a drug product.
+// One licensed biologic product, from FDA's Purple Book — the biologics
+// counterpart to Drug/Orange Book. Deliberately a separate model rather
+// than force-fit into Drug: the natural key, vocabulary (License Type,
+// Center), and the self-referential biosimilar/interchangeable/reference
+// network below have no small-molecule analogue at all. Mirrors the Purple
+// Book's own monthly product download row-for-row (BLA Number, Proprietary
+// Name, Proper Name, License Type, Center, Ref. Product name fields, ...).
+model BiologicProduct {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  blaNumber       String // e.g. "125057" — Purple Book's "BLA Number"
+  productNumber   String // distinguishes strengths/presentations within one BLA
+  proprietaryName String // e.g. "Humira"
+  properName      String // FDA's own term for the biologic's nonproprietary name, e.g. "adalimumab" — the biologics analogue of Drug.genericName
+
+  licenseType LicenseType
+  center      BiologicCenter
+
+  dosageForm      String
+  route           String
+  strength        String
+  marketingStatus String? // e.g. "Rx", "Disc" — informational, not filtered on today
+
+  approvalDate DateTime?
+
+  // Biosimilar/interchangeable -> reference-product relationship. Purple
+  // Book gives this as a NAME (Ref. Product Proprietary/Proper Name), not a
+  // BLA number — resolved to a real FK by matching against other rows in
+  // the same ingestion pass (see purpleBook/load.ts). referenceProductId is
+  // null both for true reference products themselves and for the (common)
+  // case where resolution fails or doesn't apply; referenceProductNameRaw
+  // preserves the source's raw name in the unresolved case so that
+  // information is never silently dropped.
+  referenceProductId      String?
+  referenceProduct        BiologicProduct?  @relation("ReferenceProduct", fields: [referenceProductId], references: [id])
+  biosimilarsAndInterchangeables BiologicProduct[] @relation("ReferenceProduct")
+  referenceProductNameRaw String?
+
+  // Same best-effort classification approach as Drug — see
+  // src/lib/classification/. Defaults to UNCLASSIFIED, not SMALL_MOLECULE:
+  // see the Modality enum doc comment for why biologics never get that
+  // default.
+  modality  Modality @default(UNCLASSIFIED)
+  drugClass String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  patents          Patent[]
+  exclusivities    Exclusivity[]
+  ingestionRecords IngestionRecord[]
+
+  @@unique([blaNumber, productNumber])
+  @@index([proprietaryName])
+  @@index([properName])
+  @@index([companyId])
+  @@index([modality])
+  @@index([drugClass])
+  @@index([licenseType])
+  @@index([referenceProductId])
+}
+
+// A patent listed against a drug product OR a biologic product — the same
+// model serves both (drugId / biologicProductId, exactly one set, enforced
+// by a hand-written CHECK constraint in the migration SQL, same pattern as
+// IngestionRecord's below). Deliberately shared rather than a parallel
+// BiologicPatent table: a patent number from Purple Book's disclosed
+// patent list is a real USPTO patent number like any other, so the exact
+// same PTA enrichment pipeline (src/lib/ingestion/pta/) applies to it with
+// zero new code — sharing the table is what makes that free.
 //
 // nominalExpiryDate  = the legally listed / face-value expiry (as filed,
-//                       or as printed/originally listed before adjustment).
+//                       or as printed/originally listed before adjustment;
+//                       for a Purple Book patent, the source-asserted
+//                       "Patent Expiration Date" until independently
+//                       verified — see purpleBook/load.ts).
 // effectiveExpiryDate = our best-known actual enforceable expiry, after
 //                       Patent Term Adjustment, Patent Term Extension, and
 //                       terminal disclaimers are applied.
@@ -110,8 +218,11 @@ model Drug {
 // See README.md "Data model" section for the full rationale.
 model Patent {
   id     String @id @default(cuid())
-  drugId String
-  drug   Drug   @relation(fields: [drugId], references: [id], onDelete: Cascade)
+  drugId String?
+  drug   Drug?   @relation(fields: [drugId], references: [id], onDelete: Cascade)
+
+  biologicProductId String?
+  biologicProduct   BiologicProduct? @relation(fields: [biologicProductId], references: [id], onDelete: Cascade)
 
   patentNumber String
 
@@ -146,23 +257,48 @@ model Patent {
 
   // Matches the Orange Book's own natural key. Deliberately does NOT
   // include the expiry dates, because those are exactly the mutable fields
-  // ingestion should correct in place (see README).
+  // ingestion should correct in place (see README). Continues to work
+  // correctly now that drugId is nullable: every Orange Book row still has
+  // a non-null drugId, so this constraint only ever compares those rows —
+  // Postgres skips a row from a unique index's enforcement entirely as
+  // soon as any ONE of that index's own columns is null, so this index
+  // simply never "sees" Purple Book rows (whose drugId is always null) at
+  // all, with no special handling needed.
+  //
+  // Purple Book rows get their own separate, independent uniqueness below
+  // — (biologicProductId, patentNumber), no useCode (Purple Book has no
+  // use-code concept; every biologic Patent row just leaves it at its ""
+  // default) — which by the same NULL-skipping logic never "sees" Orange
+  // Book rows (whose biologicProductId is always null) either. Two
+  // separate 2/3-column indexes, each only ever enforced within its own
+  // non-null population — NOT one index spanning both nullable FKs
+  // together, which really would silently enforce nothing for either side.
   @@unique([drugId, patentNumber, useCode])
+  @@unique([biologicProductId, patentNumber])
   @@index([effectiveExpiryDate])
   @@index([nominalExpiryDate])
 }
 
 // An FDA-granted regulatory exclusivity (separate legal mechanism from
-// patents — e.g. New Chemical Entity, Orphan Drug, Pediatric). FDA's
-// exclusivity code vocabulary is large and grows over time, so `code` is
-// kept as a raw string (from the source) rather than a rigid enum — an
-// unrecognized code should never break ingestion.
+// patents — e.g. New Chemical Entity, Orphan Drug, Pediatric, or — for
+// biologics — a BPCIA reference-product/first-interchangeable exclusivity).
+// FDA's exclusivity code vocabulary is large and grows over time, so `code`
+// is kept as a raw string (from the source) rather than a rigid enum — an
+// unrecognized code should never break ingestion. BPCIA codes
+// (BPCIA_REF_PRODUCT, BPCIA_FIRST_INTERCHANGEABLE, ORPHAN) are new
+// vocabulary in this same slot, not a new concept — see purpleBook/load.ts.
+//
+// Shared between Drug and BiologicProduct — same drugId/biologicProductId
+// polymorphism and the same partial-unique-index caveat as Patent above.
 model Exclusivity {
   id     String @id @default(cuid())
-  drugId String
-  drug   Drug   @relation(fields: [drugId], references: [id], onDelete: Cascade)
+  drugId String?
+  drug   Drug?   @relation(fields: [drugId], references: [id], onDelete: Cascade)
 
-  code        String // raw FDA exclusivity code, e.g. "NCE", "ODE-123", "PED"
+  biologicProductId String?
+  biologicProduct   BiologicProduct? @relation(fields: [biologicProductId], references: [id], onDelete: Cascade)
+
+  code        String // raw FDA exclusivity code, e.g. "NCE", "ODE-123", "PED", "BPCIA_REF_PRODUCT"
   description String?
 
   grantedDate    DateTime?
@@ -176,8 +312,12 @@ model Exclusivity {
   // Matches the source's own natural key (Appl_No + Product_No + Code +
   // Date). Unlike Patent, the date IS part of the key here: FDA doesn't
   // "correct" an exclusivity date in place the way a PTA figure gets
-  // corrected — a changed date represents a new determination.
+  // corrected — a changed date represents a new determination. Still works
+  // correctly with drugId nullable (same reasoning as Patent's @@unique
+  // above); Purple Book rows get their own separate, independent
+  // uniqueness on (biologicProductId, code, expirationDate).
   @@unique([drugId, code, expirationDate])
+  @@unique([biologicProductId, code, expirationDate])
   @@index([expirationDate])
 }
 
@@ -232,10 +372,12 @@ model IngestionRun {
 // "lastVerifiedAt" column) so disagreeing sources and value changes over
 // time stay auditable.
 //
-// Exactly one of drugId / patentId / exclusivityId must be set — enforced
-// by a CHECK constraint added by hand in the migration SQL (Prisma's schema
-// language has no first-class check-constraint support yet). If you ever
-// regenerate this migration from scratch, re-add that constraint.
+// Exactly one of drugId / patentId / exclusivityId / biologicProductId must
+// be set — enforced by a CHECK constraint added by hand in the migration
+// SQL (Prisma's schema language has no first-class check-constraint support
+// yet). If you ever regenerate this migration from scratch, re-add that
+// constraint (now 4-way: originally just drug/patent/exclusivity, extended
+// when BiologicProduct was added).
 model IngestionRecord {
   id String @id @default(cuid())
 
@@ -251,6 +393,9 @@ model IngestionRecord {
   exclusivityId String?
   exclusivity   Exclusivity? @relation(fields: [exclusivityId], references: [id], onDelete: Cascade)
 
+  biologicProductId String?
+  biologicProduct   BiologicProduct? @relation(fields: [biologicProductId], references: [id], onDelete: Cascade)
+
   externalRef String? // the source's own id/url for this record, for traceability + dedupe
   verifiedAt  DateTime @default(now())
   changeNote  String? // optional human-readable note of what changed, if anything
@@ -261,6 +406,7 @@ model IngestionRecord {
   @@index([drugId, verifiedAt])
   @@index([patentId, verifiedAt])
   @@index([exclusivityId, verifiedAt])
+  @@index([biologicProductId, verifiedAt])
   @@index([sourceId, verifiedAt])
 }
 

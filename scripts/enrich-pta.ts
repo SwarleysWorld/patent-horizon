@@ -64,11 +64,13 @@ async function main() {
     console.log("");
     console.log("--- per-patent results ---");
     for (const row of summary.results) {
-      const drug = await prisma.drug.findUnique({
-        where: { id: row.drugId },
-        select: { brandName: true },
-      });
-      const label = `${row.patentNumber} (${drug?.brandName ?? "?"})`;
+      const name = row.drugId
+        ? (await prisma.drug.findUnique({ where: { id: row.drugId }, select: { brandName: true } }))?.brandName
+        : row.biologicProductId
+          ? (await prisma.biologicProduct.findUnique({ where: { id: row.biologicProductId }, select: { proprietaryName: true } }))
+              ?.proprietaryName
+          : undefined;
+      const label = `${row.patentNumber} (${name ?? "?"})`;
 
       if (row.outcome.kind === "updated") {
         const { before, after, ptaDays, filingDate } = row.outcome;

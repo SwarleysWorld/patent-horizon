@@ -275,7 +275,11 @@ describe("GET /api/drugs (route layer)", () => {
     const res = await GET(req("?modality=NOT_REAL"));
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error.details[0].field).toBe("modality");
+    // modality is now a comma-separated multi-value param, validated as an
+    // array under the hood — the path points at the specific invalid
+    // element ("modality.0" for the first/only one here), not just the
+    // param name.
+    expect(body.error.details[0].field).toBe("modality.0");
   });
 
   it("returns a structured 400 for a malformed expiresAfter date", async () => {

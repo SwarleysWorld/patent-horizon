@@ -13,7 +13,8 @@ export interface PtaRunOptions {
 export interface PtaRunResultRow {
   patentId: string;
   patentNumber: string;
-  drugId: string;
+  drugId: string | null;
+  biologicProductId: string | null;
   outcome: EnrichOutcome;
 }
 
@@ -74,7 +75,13 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
   // concurrent requests per API key at all).
   for (const patent of candidates) {
     const outcome = await enrichOnePatent(client, source.id, patent, verifiedAt);
-    results.push({ patentId: patent.id, patentNumber: patent.patentNumber, drugId: patent.drugId, outcome });
+    results.push({
+      patentId: patent.id,
+      patentNumber: patent.patentNumber,
+      drugId: patent.drugId,
+      biologicProductId: patent.biologicProductId,
+      outcome,
+    });
 
     if (outcome.kind === "updated") updated++;
     else if (outcome.kind === "no_data") noData++;

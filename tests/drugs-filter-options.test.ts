@@ -16,7 +16,17 @@ describe("getFilterOptions (query layer)", () => {
   it("offers every modality, even ones with zero current matches", async () => {
     const options = await getFilterOptions();
     const values = options.modalities.map((m) => m.value);
-    expect(values).toEqual(["SMALL_MOLECULE", "PEPTIDE", "OLIGONUCLEOTIDE", "MONOCLONAL_ANTIBODY", "OTHER"]);
+    expect(values).toEqual([
+      "SMALL_MOLECULE",
+      "PEPTIDE",
+      "OLIGONUCLEOTIDE",
+      "MONOCLONAL_ANTIBODY",
+      "CELL_THERAPY",
+      "GENE_THERAPY",
+      "VACCINE",
+      "OTHER",
+      "UNCLASSIFIED",
+    ]);
   });
 
   it("offers every application type, even BLA which has zero matches in Orange Book data", async () => {

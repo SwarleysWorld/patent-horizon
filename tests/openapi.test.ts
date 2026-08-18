@@ -9,9 +9,16 @@ describe("buildOpenApiDocument", () => {
     expect(doc.info.title).toBe("Patent Horizon API");
   });
 
-  it("documents all drug endpoints", () => {
+  it("documents all drug/biologic/search endpoints", () => {
     expect(Object.keys(doc.paths)).toEqual(
-      expect.arrayContaining(["/api/drugs", "/api/drugs/{id}", "/api/drugs/filter-options"]),
+      expect.arrayContaining([
+        "/api/drugs",
+        "/api/drugs/{id}",
+        "/api/biologics/{id}",
+        "/api/search/autocomplete",
+        "/api/drugs/export",
+        "/api/drugs/filter-options",
+      ]),
     );
   });
 
@@ -27,6 +34,12 @@ describe("buildOpenApiDocument", () => {
       "drugClass",
       "applicationType",
       "dosageForm",
+      "route",
+      "applicant",
+      "source",
+      "patentType",
+      "exclusivityCode",
+      "minPtaGapDays",
       "sort",
       "limit",
       "offset",

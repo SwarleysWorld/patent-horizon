@@ -28,10 +28,16 @@ function isStandardUtilityPatentNumber(patentNumber: string): boolean {
   return /^[0-9]+$/.test(patentNumber);
 }
 
+// drugId/biologicProductId are both nullable and mutually exclusive
+// (enforced by Patent_single_parent_check) — this function enriches by
+// patent number alone and doesn't care which parent a candidate has, so a
+// Purple Book patent is just as valid a candidate as an Orange Book one
+// with zero special-casing below.
 export interface PatentCandidate {
   id: string;
   patentNumber: string;
-  drugId: string;
+  drugId: string | null;
+  biologicProductId: string | null;
   nominalExpiryDate: Date;
   effectiveExpiryDate: Date;
   expiryAdjustmentDays: number | null;
@@ -41,6 +47,7 @@ const CANDIDATE_SELECT = {
   id: true,
   patentNumber: true,
   drugId: true,
+  biologicProductId: true,
   nominalExpiryDate: true,
   effectiveExpiryDate: true,
   expiryAdjustmentDays: true,

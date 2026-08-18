@@ -1,15 +1,21 @@
 import "dotenv/config";
 import { prisma } from "../src/lib/prisma";
-import { classifyModality, MODALITY_LABELS, type DrugModality } from "../src/lib/classification/modality";
+import { classifyModality, MODALITY_LABELS, MODALITY_VALUES, type Modality } from "../src/lib/classification/modality";
 import { classifyDrugClass } from "../src/lib/classification/drugClass";
 
-// Backfills modality/drugClass for drugs already in the database — needed
-// because the Orange Book ingestion pipeline only classifies at
-// insert/update time (src/lib/ingestion/orangeBook/load.ts) going forward;
-// it doesn't retroactively touch rows loaded before that classification
-// existed. Safe to re-run any time (e.g. after adding a new stem rule) —
-// it always recomputes from the current genericName and classifier, never
-// accumulates drift.
+// Backfills modality/drugClass for both Drug (Orange Book) and
+// BiologicProduct (Purple Book) rows already in the database — needed
+// because each ingestion pipeline only classifies at insert/update time; it
+// doesn't retroactively touch rows loaded before a classifier change (e.g.
+// a new stem rule, or the longest-match-first engine rewrite). Safe to
+// re-run any time — it always recomputes from the current name and
+// classifier, never accumulates drift.
+//
+// The two sources use different fallbacks when nothing matches — Orange
+// Book (small-molecule regulatory pathway) falls back to SMALL_MOLECULE;
+// Purple Book (biologics pathway) falls back to UNCLASSIFIED, since an
+// unmatched biologic name is definitely not a small molecule. See
+// classifyModality's doc comment in src/lib/classification/modality.ts.
 
 function parseArgs(argv: string[]): { limit?: number; dryRun: boolean } {
   const out: { limit?: number; dryRun: boolean } = { dryRun: argv.includes("--dry-run") };
@@ -18,78 +24,146 @@ function parseArgs(argv: string[]): { limit?: number; dryRun: boolean } {
   return out;
 }
 
-async function main() {
-  const { limit, dryRun } = parseArgs(process.argv.slice(2));
+interface Row {
+  id: string;
+  name: string;
+  modality: Modality;
+  drugClass: string | null;
+}
 
-  console.log(`[classify-drugs] loading drugs${limit ? ` (limit ${limit})` : ""}...`);
-  const drugs = await prisma.drug.findMany({
-    select: { id: true, genericName: true, modality: true, drugClass: true },
-    ...(limit ? { take: limit } : {}),
-  });
-  console.log(`[classify-drugs] classifying ${drugs.length} drug(s)...`);
+interface SourceReport {
+  label: string;
+  total: number;
+  changed: number;
+  beforeModalityCounts: Record<Modality, number>;
+  afterModalityCounts: Record<Modality, number>;
+  afterClassCounts: Map<string, number>;
+}
 
-  // Group ids by the resulting (modality, drugClass) pair so the actual
-  // writes are a handful of bulk `UPDATE ... WHERE id = ANY(...)` calls
-  // instead of one round trip per drug — the difference between seconds
-  // and minutes at this row count.
-  const groups = new Map<string, { modality: DrugModality; drugClass: string | null; ids: string[] }>();
+function emptyModalityCounts(): Record<Modality, number> {
+  return Object.fromEntries(MODALITY_VALUES.map((m) => [m, 0])) as Record<Modality, number>;
+}
+
+// Groups ids by the resulting (modality, drugClass) pair so the actual
+// writes are a handful of bulk `UPDATE ... WHERE id = ANY(...)` calls
+// instead of one round trip per row — the difference between seconds and
+// minutes at Orange Book's row count.
+async function classifySource(
+  label: string,
+  rows: Row[],
+  fallback: Modality,
+  write: (group: { modality: Modality; drugClass: string | null; ids: string[] }) => Promise<void>,
+  dryRun: boolean,
+): Promise<SourceReport> {
+  const beforeModalityCounts = emptyModalityCounts();
+  const afterModalityCounts = emptyModalityCounts();
+  const afterClassCounts = new Map<string, number>();
+  const groups = new Map<string, { modality: Modality; drugClass: string | null; ids: string[] }>();
   let changed = 0;
-  const modalityCounts: Record<DrugModality, number> = {
-    SMALL_MOLECULE: 0,
-    PEPTIDE: 0,
-    OLIGONUCLEOTIDE: 0,
-    MONOCLONAL_ANTIBODY: 0,
-    OTHER: 0,
-  };
-  const classCounts = new Map<string, number>();
 
-  for (const drug of drugs) {
-    const modality = classifyModality(drug.genericName);
-    const drugClass = classifyDrugClass(drug.genericName);
-    modalityCounts[modality]++;
-    if (drugClass) classCounts.set(drugClass, (classCounts.get(drugClass) ?? 0) + 1);
+  for (const row of rows) {
+    beforeModalityCounts[row.modality]++;
 
-    if (drug.modality !== modality || drug.drugClass !== drugClass) {
+    const modality = classifyModality(row.name, fallback);
+    const drugClass = classifyDrugClass(row.name);
+    afterModalityCounts[modality]++;
+    if (drugClass) afterClassCounts.set(drugClass, (afterClassCounts.get(drugClass) ?? 0) + 1);
+
+    if (row.modality !== modality || row.drugClass !== drugClass) {
       changed++;
       const key = `${modality}::${drugClass ?? ""}`;
       const group = groups.get(key) ?? { modality, drugClass, ids: [] };
-      group.ids.push(drug.id);
+      group.ids.push(row.id);
       groups.set(key, group);
     }
   }
 
-  console.log("");
-  console.log("=== Modality distribution (all classified drugs) ===");
-  for (const [modality, count] of Object.entries(modalityCounts)) {
-    console.log(`  ${MODALITY_LABELS[modality as DrugModality].padEnd(24)} ${count}`);
+  if (!dryRun) {
+    for (const group of groups.values()) await write(group);
   }
 
-  console.log("");
-  console.log("=== Drug class tags (best-effort, not exhaustive) ===");
-  const sortedClasses = [...classCounts.entries()].sort((a, b) => b[1] - a[1]);
-  if (sortedClasses.length === 0) console.log("  (none matched)");
-  for (const [label, count] of sortedClasses) {
-    console.log(`  ${label.padEnd(32)} ${count}`);
+  return { label, total: rows.length, changed, beforeModalityCounts, afterModalityCounts, afterClassCounts };
+}
+
+function printReport(report: SourceReport) {
+  const { label, total, changed, beforeModalityCounts, afterModalityCounts, afterClassCounts } = report;
+  const beforeUnclassified = beforeModalityCounts.UNCLASSIFIED;
+  const afterUnclassified = afterModalityCounts.UNCLASSIFIED;
+  const pct = (n: number) => (total === 0 ? "0.0" : ((n / total) * 100).toFixed(1));
+
+  console.log(`\n=== ${label} (${total} row(s)) ===`);
+  console.log(`unclassified rate: ${pct(beforeUnclassified)}% before -> ${pct(afterUnclassified)}% after (${beforeUnclassified} -> ${afterUnclassified} of ${total})`);
+  console.log(`${changed} of ${total} row(s) changed modality and/or drugClass.`);
+
+  console.log("modality distribution (after):");
+  for (const modality of MODALITY_VALUES) {
+    const count = afterModalityCounts[modality];
+    if (count === 0) continue;
+    console.log(`  ${MODALITY_LABELS[modality].padEnd(24)} ${count}`);
   }
 
-  console.log("");
-  console.log(`${changed} of ${drugs.length} drug(s) need an update (${groups.size} distinct group(s)).`);
+  const sortedClasses = [...afterClassCounts.entries()].sort((a, b) => b[1] - a[1]);
+  if (sortedClasses.length > 0) {
+    console.log("drugClass tags (after, best-effort, not exhaustive):");
+    for (const [label2, count] of sortedClasses) {
+      console.log(`  ${label2.padEnd(32)} ${count}`);
+    }
+  }
+}
 
+async function main() {
+  const { limit, dryRun } = parseArgs(process.argv.slice(2));
+
+  console.log(`[classify-drugs] loading rows${limit ? ` (limit ${limit} per source)` : ""}...`);
+
+  const drugs = await prisma.drug.findMany({
+    select: { id: true, genericName: true, modality: true, drugClass: true },
+    ...(limit ? { take: limit } : {}),
+  });
+  const biologics = await prisma.biologicProduct.findMany({
+    select: { id: true, properName: true, modality: true, drugClass: true },
+    ...(limit ? { take: limit } : {}),
+  });
+
+  console.log(`[classify-drugs] classifying ${drugs.length} drug(s) + ${biologics.length} biologic product(s)...`);
+
+  const drugReport = await classifySource(
+    "Orange Book (Drug)",
+    drugs.map((d) => ({ id: d.id, name: d.genericName, modality: d.modality, drugClass: d.drugClass })),
+    "SMALL_MOLECULE",
+    async (group) => {
+      await prisma.$executeRaw`
+        UPDATE "Drug"
+        SET modality = ${group.modality}::"Modality", "drugClass" = ${group.drugClass}
+        WHERE id = ANY(${group.ids}::text[])
+      `;
+    },
+    dryRun,
+  );
+
+  const biologicReport = await classifySource(
+    "Purple Book (BiologicProduct)",
+    biologics.map((b) => ({ id: b.id, name: b.properName, modality: b.modality, drugClass: b.drugClass })),
+    "UNCLASSIFIED",
+    async (group) => {
+      await prisma.$executeRaw`
+        UPDATE "BiologicProduct"
+        SET modality = ${group.modality}::"Modality", "drugClass" = ${group.drugClass}
+        WHERE id = ANY(${group.ids}::text[])
+      `;
+    },
+    dryRun,
+  );
+
+  printReport(drugReport);
+  printReport(biologicReport);
+
+  console.log("");
   if (dryRun) {
     console.log("[classify-drugs] --dry-run set — no changes written.");
-    return;
+  } else {
+    console.log(`[classify-drugs] wrote ${drugReport.changed + biologicReport.changed} update(s).`);
   }
-
-  let written = 0;
-  for (const group of groups.values()) {
-    await prisma.$executeRaw`
-      UPDATE "Drug"
-      SET modality = ${group.modality}::"DrugModality", "drugClass" = ${group.drugClass}
-      WHERE id = ANY(${group.ids}::text[])
-    `;
-    written += group.ids.length;
-  }
-  console.log(`[classify-drugs] wrote ${written} update(s).`);
 }
 
 main()

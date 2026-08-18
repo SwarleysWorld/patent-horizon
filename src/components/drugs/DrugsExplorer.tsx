@@ -4,13 +4,17 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import clsx from "clsx";
-import type { DrugSummary, FilterOptions } from "@/lib/drugs/schemas";
-import type { DrugModality } from "@/lib/classification/modality";
+import type { SearchResult, FilterOptions } from "@/lib/drugs/schemas";
+import type { Modality } from "@/lib/classification/modality";
 import { titleCase } from "@/lib/format";
 import { TypeBadge } from "./TypeBadge";
+import { LicenseTypeBadge } from "./LicenseTypeBadge";
+import { SourceBadge } from "./SourceBadge";
 import { ModalityBadge } from "./ModalityBadge";
 import { EntryDateCell } from "./EntryDateCell";
+import { PtaGapCell } from "./PtaGapCell";
 import { EmptyState } from "./EmptyState";
+import { MultiSelectFilter } from "./MultiSelectFilter";
 
 const HORIZONS: { label: string; days: number | null }[] = [
   { label: "30 days", days: 30 },
@@ -20,10 +24,21 @@ const HORIZONS: { label: string; days: number | null }[] = [
   { label: "All", days: null },
 ];
 
-// Advanced-search params, distinct from the primary search/horizon params
-// above — used to compute the "N active" badge and whether the panel
-// should start expanded.
-const ADVANCED_PARAMS = ["modality", "drugClass", "applicationType", "dosageForm", "expiresAfter", "expiresBefore"] as const;
+// Every multi-value filter dimension, in the order they render in the
+// Advanced panel — also what powers the "N active" count on the toggle
+// button and what a bare "Clear" wipes.
+const MULTI_FILTER_KEYS = [
+  "modality",
+  "drugClass",
+  "applicationType",
+  "dosageForm",
+  "route",
+  "applicant",
+  "source",
+  "patentType",
+  "exclusivityCode",
+] as const;
+const OTHER_ADVANCED_KEYS = ["expiresAfter", "expiresBefore", "minPtaGapDays"] as const;
 
 interface Pagination {
   limit: number;
@@ -32,14 +47,27 @@ interface Pagination {
   hasMore: boolean;
 }
 
+interface Facets {
+  [dimension: string]: { value: string; count: number }[];
+}
+
+type AutocompleteSuggestion = { id: string; source: string; name: string; alternateName: string };
+
+function getCsv(searchParams: URLSearchParams, key: string): string[] {
+  const raw = searchParams.get(key);
+  return raw ? raw.split(",").filter(Boolean) : [];
+}
+
 export function DrugsExplorer({
   data,
   pagination,
   filterOptions,
+  facets,
 }: {
-  data: DrugSummary[];
+  data: SearchResult[];
   pagination: Pagination;
   filterOptions: FilterOptions;
+  facets: Facets;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -49,19 +77,21 @@ export function DrugsExplorer({
 
   const committedQuery = searchParams.get("q") ?? "";
   const [queryDraft, setQueryDraft] = useState(committedQuery);
+  const [suggestions, setSuggestions] = useState<AutocompleteSuggestion[]>([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+
   const withinDaysParam = searchParams.get("withinDays");
   const activeHorizon = withinDaysParam === null ? null : Number(withinDaysParam);
-  const sort = searchParams.get("sort") === "entry_desc" ? "entry_desc" : "entry_asc";
+  const sort = (searchParams.get("sort") as "entry_asc" | "entry_desc" | "pta_gap_desc") || "entry_asc";
 
-  const activeAdvancedCount = ADVANCED_PARAMS.filter((key) => searchParams.get(key) !== null).length;
+  const activeAdvancedCount =
+    MULTI_FILTER_KEYS.filter((k) => getCsv(searchParams, k).length > 0).length +
+    OTHER_ADVANCED_KEYS.filter((k) => searchParams.get(k) !== null).length;
   const [advancedOpen, setAdvancedOpen] = useState(activeAdvancedCount > 0);
 
-  const modality = searchParams.get("modality") ?? "";
-  const drugClass = searchParams.get("drugClass") ?? "";
-  const applicationType = searchParams.get("applicationType") ?? "";
-  const dosageForm = searchParams.get("dosageForm") ?? "";
   const expiresAfter = searchParams.get("expiresAfter") ?? "";
   const expiresBefore = searchParams.get("expiresBefore") ?? "";
+  const minPtaGapDays = searchParams.get("minPtaGapDays") ?? "";
 
   function navigate(patch: Record<string, string | null>, resetOffset = true) {
     const params = new URLSearchParams(searchParams.toString());
@@ -76,18 +106,41 @@ export function DrugsExplorer({
     });
   }
 
-  // Debounce search input -> URL. Skip the no-op case where the draft
-  // already matches what's committed (e.g. right after mount).
+  function setMultiFilter(key: string, values: string[]) {
+    navigate({ [key]: values.length > 0 ? values.join(",") : null });
+  }
+
+  // Debounce search input -> committed URL param + autocomplete
+  // suggestions. Skip the no-op case where the draft already matches
+  // what's committed (e.g. right after mount).
   useEffect(() => {
     if (queryDraft === committedQuery) return;
     const handle = setTimeout(() => {
       navigate({ q: queryDraft.trim() || null });
+      if (queryDraft.trim().length > 0) {
+        fetch(`/api/search/autocomplete?q=${encodeURIComponent(queryDraft.trim())}`)
+          .then((r) => (r.ok ? r.json() : { data: [] }))
+          .then((body) => {
+            setSuggestions(body.data ?? []);
+            setSuggestionsOpen(true);
+          })
+          .catch(() => {});
+      } else {
+        setSuggestions([]);
+        setSuggestionsOpen(false);
+      }
     }, 300);
     return () => clearTimeout(handle);
     // Only re-run when the draft changes — `navigate` and `committedQuery`
     // intentionally aren't deps here, or every keystroke would fire twice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryDraft]);
+
+  function selectSuggestion(s: AutocompleteSuggestion) {
+    setQueryDraft(s.name);
+    setSuggestionsOpen(false);
+    navigate({ q: s.name });
+  }
 
   // Power-user shortcut: "/" focuses search, unless already typing somewhere.
   useEffect(() => {
@@ -109,15 +162,22 @@ export function DrugsExplorer({
   const hasAnyFilter = Boolean(committedQuery || activeHorizon !== null || activeAdvancedCount > 0);
 
   function clearAdvanced() {
-    navigate({
-      modality: null,
-      drugClass: null,
-      applicationType: null,
-      dosageForm: null,
-      expiresAfter: null,
-      expiresBefore: null,
-    });
+    const patch: Record<string, null> = {};
+    for (const key of MULTI_FILTER_KEYS) patch[key] = null;
+    for (const key of OTHER_ADVANCED_KEYS) patch[key] = null;
+    navigate(patch);
   }
+
+  function facetOptions(dimension: string, baseOptions: { value: string; label: string }[]) {
+    const counts = new Map((facets[dimension] ?? []).map((f) => [f.value, f.count]));
+    return baseOptions.map((o) => ({ ...o, count: counts.get(o.value) }));
+  }
+
+  function detailHref(row: SearchResult): string {
+    return row.source === "purple_book" ? `/biologics/${row.id}` : `/drugs/${row.id}`;
+  }
+
+  const exportHref = `/api/drugs/export?${searchParams.toString()}`;
 
   return (
     <div className="flex flex-1 flex-col">
@@ -139,12 +199,34 @@ export function DrugsExplorer({
                 type="text"
                 value={queryDraft}
                 onChange={(e) => setQueryDraft(e.target.value)}
+                onFocus={() => suggestions.length > 0 && setSuggestionsOpen(true)}
+                onBlur={() => setTimeout(() => setSuggestionsOpen(false), 150)}
                 placeholder="Search brand, generic, or company…"
                 className="w-64 rounded-md border border-zinc-300 bg-white py-1.5 pr-3 pl-8 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
               />
               <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-zinc-200 bg-zinc-50 px-1 font-mono text-[10px] text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 sm:block hidden">
                 /
               </kbd>
+
+              {suggestionsOpen && suggestions.length > 0 && (
+                <div className="absolute top-full left-0 z-20 mt-1 w-72 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+                  {suggestions.map((s) => (
+                    <button
+                      key={`${s.source}-${s.id}`}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => selectSuggestion(s)}
+                      className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                    >
+                      <span>
+                        <span className="font-medium text-zinc-900 dark:text-zinc-50">{titleCase(s.name)}</span>{" "}
+                        <span className="text-zinc-400">{titleCase(s.alternateName)}</span>
+                      </span>
+                      <SourceBadge source={s.source} />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-1 rounded-md bg-zinc-100 p-0.5 dark:bg-zinc-900">
@@ -195,6 +277,17 @@ export function DrugsExplorer({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
               </svg>
             </button>
+
+            <a
+              href={exportHref}
+              className="flex items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900"
+              title="Export the current filtered results as CSV"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v13m0 0l-4-4m4 4l4-4M5 19h14" />
+              </svg>
+              Export CSV
+            </a>
           </div>
 
           <div className="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
@@ -208,65 +301,112 @@ export function DrugsExplorer({
               </svg>
             </span>
             <span>
-              {pagination.total.toLocaleString()} drug{pagination.total === 1 ? "" : "s"}
+              {pagination.total.toLocaleString()} result{pagination.total === 1 ? "" : "s"}
             </span>
           </div>
         </div>
 
         {advancedOpen && (
-          <div className="flex flex-wrap items-end gap-3 rounded-md border border-zinc-200 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
-            <FilterSelect
-              label="Modality"
-              value={modality}
-              onChange={(v) => navigate({ modality: v || null })}
-              options={filterOptions.modalities.map((m) => ({ value: m.value, label: m.label }))}
-            />
-            <FilterSelect
-              label="Drug class"
-              value={drugClass}
-              onChange={(v) => navigate({ drugClass: v || null })}
-              options={filterOptions.drugClasses.map((c) => ({ value: c, label: c }))}
-            />
-            <FilterSelect
-              label="Application type"
-              value={applicationType}
-              onChange={(v) => navigate({ applicationType: v || null })}
-              options={filterOptions.applicationTypes.map((t) => ({ value: t, label: t }))}
-            />
-            <FilterSelect
-              label="Dosage form"
-              value={dosageForm}
-              onChange={(v) => navigate({ dosageForm: v || null })}
-              options={filterOptions.dosageForms.map((f) => ({ value: f, label: titleCase(f) }))}
-            />
-
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Est. entry after</label>
-              <input
-                type="date"
-                value={expiresAfter}
-                onChange={(e) => navigate({ expiresAfter: e.target.value || null })}
-                className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          <div className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+            <div className="flex flex-wrap items-end gap-3">
+              <MultiSelectFilter
+                label="Modality"
+                values={getCsv(searchParams, "modality")}
+                onChange={(v) => setMultiFilter("modality", v)}
+                options={facetOptions("modality", filterOptions.modalities)}
+              />
+              <MultiSelectFilter
+                label="Drug class"
+                values={getCsv(searchParams, "drugClass")}
+                onChange={(v) => setMultiFilter("drugClass", v)}
+                options={filterOptions.drugClasses.map((c) => ({ value: c, label: c }))}
+              />
+              <MultiSelectFilter
+                label="Application type"
+                values={getCsv(searchParams, "applicationType")}
+                onChange={(v) => setMultiFilter("applicationType", v)}
+                options={facetOptions("applicationType", filterOptions.applicationTypes.map((t) => ({ value: t, label: t })))}
+              />
+              <MultiSelectFilter
+                label="Source"
+                values={getCsv(searchParams, "source")}
+                onChange={(v) => setMultiFilter("source", v)}
+                options={facetOptions("source", filterOptions.sources)}
+              />
+              <MultiSelectFilter
+                label="Patent type"
+                values={getCsv(searchParams, "patentType")}
+                onChange={(v) => setMultiFilter("patentType", v)}
+                options={filterOptions.patentTypes}
+              />
+              <MultiSelectFilter
+                label="Dosage form"
+                values={getCsv(searchParams, "dosageForm")}
+                onChange={(v) => setMultiFilter("dosageForm", v)}
+                options={facetOptions("dosageForm", filterOptions.dosageForms.map((f) => ({ value: f, label: titleCase(f) })))}
+              />
+              <MultiSelectFilter
+                label="Route"
+                values={getCsv(searchParams, "route")}
+                onChange={(v) => setMultiFilter("route", v)}
+                options={facetOptions("route", filterOptions.routes.map((r) => ({ value: r, label: titleCase(r) })))}
+              />
+              <MultiSelectFilter
+                label="Applicant"
+                values={getCsv(searchParams, "applicant")}
+                onChange={(v) => setMultiFilter("applicant", v)}
+                options={filterOptions.applicants.map((a) => ({ value: a, label: titleCase(a) }))}
+              />
+              <MultiSelectFilter
+                label="Exclusivity code"
+                values={getCsv(searchParams, "exclusivityCode")}
+                onChange={(v) => setMultiFilter("exclusivityCode", v)}
+                options={filterOptions.exclusivityCodes.map((c) => ({ value: c, label: c }))}
               />
             </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Est. entry before</label>
-              <input
-                type="date"
-                value={expiresBefore}
-                onChange={(e) => navigate({ expiresBefore: e.target.value || null })}
-                className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-              />
-            </div>
 
-            {activeAdvancedCount > 0 && (
-              <button
-                onClick={clearAdvanced}
-                className="rounded-md px-2 py-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-              >
-                Clear
-              </button>
-            )}
+            <div className="flex flex-wrap items-end gap-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Est. entry after</label>
+                <input
+                  type="date"
+                  value={expiresAfter}
+                  onChange={(e) => navigate({ expiresAfter: e.target.value || null })}
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Est. entry before</label>
+                <input
+                  type="date"
+                  value={expiresBefore}
+                  onChange={(e) => navigate({ expiresBefore: e.target.value || null })}
+                  className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                  Min. PTA gap (days)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={minPtaGapDays}
+                  onChange={(e) => navigate({ minPtaGapDays: e.target.value || null })}
+                  placeholder="e.g. 180"
+                  className="w-28 rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none dark:border-emerald-700 dark:bg-zinc-900 dark:text-zinc-100"
+                />
+              </div>
+
+              {activeAdvancedCount > 0 && (
+                <button
+                  onClick={clearAdvanced}
+                  className="rounded-md px-2 py-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -275,56 +415,80 @@ export function DrugsExplorer({
         <EmptyState hasFilters={hasAnyFilter} />
       ) : (
         <div className={clsx("overflow-x-auto transition-opacity", isPending && "opacity-60")}>
-          <table className="w-full min-w-[960px] border-collapse text-sm">
+          <table className="w-full min-w-[1180px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                <th className="px-4 py-2 font-medium">Drug</th>
+                <th className="px-4 py-2 font-medium">Result</th>
                 <th className="px-4 py-2 font-medium">Company</th>
+                <th className="px-4 py-2 font-medium">Source</th>
                 <th className="px-4 py-2 font-medium">Type</th>
                 <th className="px-4 py-2 font-medium">Class</th>
                 <th className="px-4 py-2 text-right font-medium">Patents</th>
                 <th className="px-4 py-2 text-right font-medium">Excl.</th>
                 <th className="px-4 py-2 text-right font-medium">
                   <button
+                    onClick={() => navigate({ sort: "pta_gap_desc" })}
+                    className={clsx(
+                      "inline-flex items-center gap-1 hover:text-zinc-900 dark:hover:text-zinc-100",
+                      sort === "pta_gap_desc" && "text-emerald-700 dark:text-emerald-400",
+                    )}
+                    title="Sort by biggest USPTO Patent Term Adjustment gap"
+                  >
+                    PTA Gap
+                    {sort === "pta_gap_desc" && <span>▼</span>}
+                  </button>
+                </th>
+                <th className="px-4 py-2 text-right font-medium">
+                  <button
                     onClick={() => navigate({ sort: sort === "entry_asc" ? "entry_desc" : "entry_asc" })}
-                    className="inline-flex items-center gap-1 hover:text-zinc-900 dark:hover:text-zinc-100"
+                    className={clsx(
+                      "inline-flex items-center gap-1 hover:text-zinc-900 dark:hover:text-zinc-100",
+                      sort !== "pta_gap_desc" && "text-zinc-900 dark:text-zinc-100",
+                    )}
                   >
                     Est. Generic Entry
-                    <span className="text-zinc-400">{sort === "entry_asc" ? "▲" : "▼"}</span>
+                    {sort !== "pta_gap_desc" && <span className="text-zinc-400">{sort === "entry_asc" ? "▲" : "▼"}</span>}
                   </button>
                 </th>
               </tr>
             </thead>
             <tbody>
-              {data.map((drug) => (
+              {data.map((row) => (
                 <tr
-                  key={drug.id}
-                  onClick={() => router.push(`/drugs/${drug.id}`)}
+                  key={row.id}
+                  onClick={() => router.push(detailHref(row))}
                   className="cursor-pointer border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
                 >
                   <td className="px-4 py-2.5">
-                    <Link href={`/drugs/${drug.id}`} className="block font-medium text-zinc-900 hover:underline dark:text-zinc-50">
-                      {titleCase(drug.brandName)}
+                    <Link href={detailHref(row)} className="block font-medium text-zinc-900 hover:underline dark:text-zinc-50">
+                      {titleCase(row.name)}
                     </Link>
                     <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {titleCase(drug.genericName)} · {drug.strength}
+                      {titleCase(row.alternateName)} · {row.strength}
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-zinc-600 dark:text-zinc-400">{titleCase(drug.company.name)}</td>
+                  <td className="px-4 py-2.5 text-zinc-600 dark:text-zinc-400">{titleCase(row.company.name)}</td>
                   <td className="px-4 py-2.5">
-                    <TypeBadge type={drug.applicationType} />
+                    <SourceBadge source={row.source} />
                   </td>
                   <td className="px-4 py-2.5">
-                    <ClassCell modality={drug.modality} drugClass={drug.drugClass} filterOptions={filterOptions} />
+                    {row.applicationType && <TypeBadge type={row.applicationType} />}
+                    {row.licenseType && <LicenseTypeBadge licenseType={row.licenseType} />}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <ClassCell modality={row.modality} drugClass={row.drugClass} filterOptions={filterOptions} />
                   </td>
                   <td className="px-4 py-2.5 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
-                    {drug.patentCount}
+                    {row.patentCount}
                   </td>
                   <td className="px-4 py-2.5 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
-                    {drug.exclusivityCount}
+                    {row.exclusivityCount}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <PtaGapCell days={row.maxPtaGapDays} />
                   </td>
                   <td className="px-4 py-2.5">
-                    {drug.estimatedGenericEntryDate && <EntryDateCell date={drug.estimatedGenericEntryDate} />}
+                    {row.estimatedGenericEntryDate && <EntryDateCell date={row.estimatedGenericEntryDate} />}
                   </td>
                 </tr>
               ))}
@@ -360,51 +524,24 @@ export function DrugsExplorer({
   );
 }
 
-function FilterSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="min-w-32 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-      >
-        <option value="">Any</option>
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
 function ClassCell({
   modality,
   drugClass,
   filterOptions,
 }: {
-  modality: DrugModality;
+  modality: Modality;
   drugClass: string | null;
   filterOptions: FilterOptions;
 }) {
-  if (modality !== "SMALL_MOLECULE") {
+  if (modality !== "SMALL_MOLECULE" && modality !== "UNCLASSIFIED") {
     const label = filterOptions.modalities.find((m) => m.value === modality)?.label ?? modality;
     return <ModalityBadge modality={modality} label={label} />;
   }
   if (drugClass) {
     return <span className="text-xs text-zinc-500 dark:text-zinc-400">{drugClass}</span>;
+  }
+  if (modality === "UNCLASSIFIED") {
+    return <span className="text-xs text-zinc-300 dark:text-zinc-700" title="No confident classification">Unclassified</span>;
   }
   return <span className="text-xs text-zinc-300 dark:text-zinc-700">—</span>;
 }

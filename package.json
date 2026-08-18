@@ -11,6 +11,7 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "ingest:orange-book": "tsx scripts/ingest-orange-book.ts",
+    "ingest:purple-book": "tsx scripts/ingest-purple-book.ts",
     "enrich:pta": "tsx scripts/enrich-pta.ts",
     "classify:drugs": "tsx scripts/classify-drugs.ts",
     "test": "vitest run",

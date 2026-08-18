@@ -37,10 +37,12 @@ Next.js app, one Postgres database.
 `prisma/schema.prisma` is the source of truth; this section explains the
 non-obvious decisions.
 
-**Entities:** `Company` → `Drug` (one approved product: brand/generic name +
-dosage form + route + strength under one FDA application) → `Patent` and
-`Exclusivity` (both belong to a `Drug`). `DataSource` + `IngestionRecord`
-track provenance across all three.
+**Entities:** `Company` → `Drug` (small molecules, FDA Orange Book — one
+approved product: brand/generic name + dosage form + route + strength
+under one FDA application) and `Company` → `BiologicProduct` (biologics,
+FDA Purple Book — see below). `Patent` and `Exclusivity` belong to either
+a `Drug` or a `BiologicProduct`. `DataSource` + `IngestionRecord` track
+provenance across all four.
 
 ### Grain of `Drug`: one row per product, not per application
 
@@ -167,7 +169,55 @@ I chose explicit nullable FKs (`drugId`/`patentId`/`exclusivityId`) over a
 generic `entityType` + `entityId` polymorphic pair specifically so the
 database can enforce this and so deletes cascade correctly; the cost is
 that adding a fourth trackable entity type later means a migration to add
-a fourth nullable FK column, not just a new enum value.
+a fourth nullable FK column, not just a new enum value. That prediction
+held exactly: adding `BiologicProduct` (below) meant a new nullable
+`IngestionRecord.biologicProductId` column and extending the `CHECK`
+constraint from 3-way to 4-way — a small, mechanical migration, not a
+redesign.
+
+### Extending to a second product type: `BiologicProduct`
+
+Biologics (monoclonal antibodies, biosimilars, gene/cell therapies,
+vaccines — FDA's Purple Book, see below) don't fit the `Drug` model:
+different natural key semantics (`blaNumber`+`productNumber` vs.
+`applicationNumber`+`productNumber`), a License Type/Center vocabulary
+with no small-molecule analogue, and — the genuinely novel part — a
+self-referential biosimilar/interchangeable/reference-product network
+(`BiologicProduct.referenceProductId → BiologicProduct.id`) that doesn't
+exist for NDA/ANDA drugs at all. Rather than force any of that onto
+`Drug`, `BiologicProduct` is its own model, reusing `Company` (a firm can
+hold both NDA/ANDA and BLA applications) and the shared `Modality` enum.
+
+**`Patent` and `Exclusivity` are reused polymorphically instead** — both
+gained a nullable `biologicProductId` alongside the existing `drugId`
+(exactly one set, enforced by a hand-written `CHECK` constraint, same
+pattern as `IngestionRecord`'s). Two concrete reasons this was reuse, not
+just convenience:
+
+1. A Purple Book patent-list entry is a real USPTO patent number — the
+   existing PTA enrichment pipeline enriches by patent number alone and
+   doesn't care what it's attached to. Sharing the table means biologic
+   patents get real PTA enrichment with **zero new enrichment code** (see
+   PTA section below).
+2. `Exclusivity.code` was already documented as "a raw string because the
+   vocabulary grows over time" — BPCIA codes (`BPCIA_REF_PRODUCT`,
+   `BPCIA_FIRST_INTERCHANGEABLE`, `ORPHAN`) are new vocabulary in that same
+   slot, not a new concept requiring a parallel table.
+
+**A real gotcha this surfaced, worth knowing before adding a similar
+polymorphic FK elsewhere:** a single compound unique index spanning *both*
+nullable FK columns together (e.g. `@@unique([drugId, biologicProductId,
+patentNumber])`) would silently enforce nothing for either side — Postgres
+skips a row from a unique index's checking entirely as soon as any ONE of
+that index's own columns is `NULL`, and every row has at least one of the
+two always null by design. The fix isn't a partial index (tried first,
+then simplified once this was understood) — it's just **two separate,
+independent unique indexes**, each on its own FK: `@@unique([drugId,
+patentNumber, useCode])` (unaffected — every Orange Book row's
+`biologicProductId` is null, and that column isn't part of this index at
+all) and `@@unique([biologicProductId, patentNumber])` (a new one, scoped
+to its own non-null population the same way). Each index only "sees" rows
+where all of its own columns are non-null, so the two never interfere.
 
 ### What's deliberately not in the schema yet
 
@@ -333,6 +383,152 @@ patent rows, ~2.3k exclusivity rows), worth knowing before extending this:
 | Patents | 21,255 (from 22,131 raw rows — collapsed by *PED merging + a few duplicate groups) |
 | Exclusivities | 2,267 (from 2,341 raw rows — 74 were literal duplicates) |
 
+## Data ingestion: FDA Purple Book
+
+`npm run ingest:purple-book` populates `BiologicProduct` (and, where
+disclosed, `Patent`/`Exclusivity`) from FDA's Purple Book — the biologics
+counterpart to Orange Book: monoclonal antibodies, biosimilars, gene/cell
+therapies, vaccines, and other biologic products regulated under a BLA
+(Biologics License Application) rather than an NDA/ANDA.
+
+### The source — researched directly, not assumed
+
+Confirmed against the live site (`purplebooksearch.fda.gov`) before writing
+any code, since FDA restructured Purple Book in recent years and stale
+assumptions from general knowledge would have been wrong:
+
+- **Product data**: a real monthly CSV/XLSX snapshot, same static-file
+  hosting pattern as Orange Book —
+  `accessdata.fda.gov/drugsatfda_docs/PurpleBook/{year}/purplebook-search-{Month}-data-download.csv`.
+  Each monthly file has two sections (a change-log of that month's
+  updates, then the full current snapshot); this pipeline reads only the
+  full-snapshot section, by finding the *last* occurrence of the repeated
+  header row. Unlike Orange Book's simple `~`-delimited format, this is
+  real quoted-field CSV (`"Recombivax, Recombivax Hb"` — a proprietary
+  name containing a literal comma) — hand-rolled RFC4180 parsing rather
+  than a naive comma-split, and rather than adding a CSV-parsing
+  dependency for a well-understood, bounded algorithm.
+- **Patent data is a *separate*, much thinner source**, mandated by the
+  2021 Biological Product Patent Transparency (BPPT) Act:
+  `purplebooksearch.fda.gov/patent-list`. There is **no downloadable
+  CSV/XLSX for this** — confirmed by checking the actual downloads page.
+  The only place it exists is a server-rendered HTML `<table>`; the page's
+  DataTables widget loads from that same table and paginates it
+  client-side, it doesn't call a separate JSON API. So this pipeline
+  scrapes that HTML directly — isolated in its own module
+  (`purpleBook/parsePatentList.ts`) so a markup change there can never take
+  down the far more valuable product ingestion. A plain fetch/curl with no
+  User-Agent gets silently blocked by FDA's WAF (a 200 "FDA Apology" page,
+  not an error status — easy to mistake for success); a standard browser
+  User-Agent works.
+- **No official API key or rate limit for either source** — same
+  batch-download shape as Orange Book.
+
+### How the pipeline works
+
+```
+src/lib/ingestion/purpleBook/
+  types.ts            shared row/result types
+  parseProducts.ts     product CSV -> typed rows, never touches the DB
+  parsePatentList.ts   patent-list HTML -> typed rows, isolated from the above
+  load.ts              typed rows -> DB (3-pass: companies+products, then
+                        reference-product name resolution, then patents/exclusivities)
+  index.ts             orchestration: fetch both sources, parse, load, write run summary
+scripts/ingest-purple-book.ts   CLI entrypoint (npm run ingest:purple-book)
+```
+
+Same operating discipline as Orange Book: idempotent (`upsert` on the
+natural key — `BiologicProduct[blaNumber,productNumber]`), never crashes on
+a bad row (malformed rows logged to `issues`, not thrown), every run
+writes an `IngestionRun` + per-entity `IngestionRecord`s, tagged with a
+`"FDA Purple Book"` `DataSource` row distinct from Orange Book's. `--url
+<csv-url>` overrides the auto-selected month (which tries the current
+month, then automatically falls back to the prior month on a 404 — FDA
+routinely hasn't published the current month's file yet); `--skip-patent-list`
+skips the separate HTML scrape.
+
+**Reference-product resolution is a genuine two-pass problem.** Purple
+Book gives a biosimilar/interchangeable row its reference product's
+*name* (`Ref. Product Proprietary/Proper Name`), not its BLA number — so
+`load.ts` upserts every product first, builds a name→id map from what it
+just wrote, then resolves `referenceProductId` in a second pass. Real
+result: **236 of 236 resolvable reference-product links resolved
+successfully** (100%) against the July 2026 snapshot. When resolution
+*would* fail, the raw name is kept in `referenceProductNameRaw` rather than
+silently dropped — nothing something didn't match ever just disappears.
+
+### What the source data actually looks like (and what surprised me)
+
+- **Patent coverage is genuinely thin — this is the honest answer to "how
+  much real patent data does Purple Book give you."** Only **16 of 855
+  distinct BLAs (1.9%)** have any patent disclosed at all, cross-checked
+  two ways: the product CSV's own `Patent List Provided` flag (49 of 2,230
+  product rows) and the separate patent-list page (424 total patent rows,
+  all traceable to those same 16 BLAs). This isn't a pipeline gap — it's
+  what the BPPT Act actually requires: a reference-product sponsor only has
+  to disclose patents when an actual 351(k) biosimilar patent dance is
+  triggered against them, not proactively for every licensed biologic. The
+  other ~98% of biologic products simply have zero `Patent` rows on file,
+  the same as an Orange Book generic with no listed patent — visible in
+  the UI, not hidden.
+- **The patent-list page was 14 months stale relative to the product
+  database** at the time this was built (patent list last updated June
+  2025; product database updated August 2026). Worth knowing if patent
+  counts ever look surprisingly low for a biologic you'd expect to have
+  recent disclosures.
+- **The disclosed patent data is thinner per-record too, not just sparser
+  overall**: `Reference Product BLA Number, Applicant, Proprietary Name,
+  Proper Name, Patent Number, Patent Expiration Date` — no filing date, no
+  use code, no substance/product coverage flags. Structurally, though,
+  it's still a real USPTO patent number, so it goes through the *exact
+  same* `Patent` table and `nominalExpiryDate = effectiveExpiryDate =
+  <source date>, filingDate = null` starting state Orange Book patents get
+  before PTA enrichment — meaning the existing PTA pipeline
+  (`src/lib/ingestion/pta/`) picks these up as ordinary candidates with
+  **zero new code**. 1,539 `Patent` rows currently exist from the 424 raw
+  disclosures (one per BLA fans out to every product-strength row sharing
+  that BLA, since the source has no product-level patent granularity).
+- **BPCIA exclusivity is three distinct legal mechanisms, not one field**:
+  12-year (+6mo pediatric) reference-product exclusivity, 1-year
+  first-interchangeable exclusivity, and orphan-drug exclusivity — three
+  separate date columns in the source, loaded as three distinct
+  `Exclusivity.code` values (`BPCIA_REF_PRODUCT`,
+  `BPCIA_FIRST_INTERCHANGEABLE`, `ORPHAN`) rather than force-fit into one.
+  First-interchangeable exclusivity can legitimately be the literal string
+  `"Date TBD"` (FDA has determined eligibility but not yet the period) —
+  handled as an expected, unlogged case, not an error.
+- **Two real bugs were caught only by manually sanity-checking a live API
+  response against a real drug (Keytruda), not by the isolated checks that
+  produced the fixes they were checking**, worth internalizing as a
+  pattern: (1) a 2-digit-year century pivot (`"25-Jan-31"` → year 31) was
+  set at a threshold of 30 based on checking only two date columns; the
+  true range across all five date columns is 00-32/64-99, so a real future
+  date (2031) was silently stored as 1931 until caught by the estimated
+  entry date showing "Jan 1931" for a product approved in 2014. (2) The
+  long-month-name date format (`"January 4, 2031"`) was parsed via a plain
+  `new Date(...)`, which resolves in the *server's local timezone* — every
+  date-only value needs re-anchoring to UTC midnight of the parsed
+  calendar date, or the same ingestion run produces different stored
+  instants depending on where it's deployed. Both are covered by
+  regression tests now (`tests/purple-book-parse.test.ts`,
+  `tests/purple-book-patentlist-parse.test.ts`) — the second bug
+  specifically only surfaces as a failing test asserting an *exact* UTC
+  timestamp, not as a wrong calendar date, which is why the original
+  real-data spot-check didn't catch it.
+- **3 of 2,230 product rows have a genuinely blank Proprietary Name in
+  FDA's own data** — three antivenin products approved in 1936/1967
+  (`Antivenin (Latrodectus mactans)`, `Antivenin (Micrurus fulvius)`).
+  Skipped and logged, not a parsing bug.
+
+### Result of the first real run
+
+| Entity | Count |
+|---|---|
+| Biologic products | 2,227 (of 2,230 raw rows — 3 skipped, see above) |
+| Patents | 1,539 (from 424 raw disclosures, fanned out across product-strength rows) |
+| Exclusivities | 636 (36 reference-product, 30 first-interchangeable, 570 orphan) |
+| Reference products resolved | 236 / 236 (100%) |
+
 ## Patent Term Adjustment enrichment
 
 `npm run enrich:pta` corrects the single most common source of a wrong
@@ -418,6 +614,18 @@ Stop the process (Ctrl-C, crash, whatever) at any point and re-run
 `npm run enrich:pta` — already-processed patents are skipped automatically,
 no duplicate work, no re-billed API calls.
 
+**This pipeline now also enriches Purple Book patents, with zero code
+changes.** Candidate selection queries `Patent` generically (any row
+lacking an `IngestionRecord` from this `DataSource`) — it was never keyed
+on `drugId` specifically, so once `Patent.biologicProductId` existed as an
+alternate parent, biologic-linked patents became ordinary candidates
+automatically. Verified directly: of 22,794 total un-enriched candidates,
+1,539 are biologic-linked and are selected identically to the 21,255
+drug-linked ones. (The USPTO ODP API key currently on file is failing
+auth — see [Notes for future sessions](#notes-for-future-sessions-human-or-agent)
+— so this hasn't been demonstrated with a live enrichment run yet, but the
+wiring is in place and verified up to that point.)
+
 ### How `effectiveExpiryDate` is computed
 
 - **Standard (all-numeric) patent number:** `effectiveExpiryDate =
@@ -470,67 +678,67 @@ npm run enrich:pta -- --patent 6967208,8722693   # enrich specific patent number
 ## API
 
 The product surface: "show me patents expiring soon, so I can act on generic
-entry opportunities before competitors do." Two endpoints, both `GET`, both
-JSON.
+entry opportunities before competitors do." Six endpoints, all `GET`, all
+JSON (except the CSV export).
 
 **Browse the interactive docs at `/docs`** (run `npm run dev`, then open
 [http://localhost:3000/docs](http://localhost:3000/docs)) — a full Swagger/Scalar-style reference with
 try-it-now requests and generated code samples in several languages. The
 raw spec is at `/api/openapi.json`.
 
-### `GET /api/drugs` — list / search, ranked by soonest generic entry
+### `GET /api/drugs` — unified list / search, ranked by soonest generic entry
 
-Every drug in the response carries `estimatedGenericEntryDate`: the latest
-expiry date among that drug's currently-listed patents and exclusivities
-(computed in the database via a window-function query in
-[queries.ts](src/lib/drugs/queries.ts), not fetched-then-computed in JS —
-it has to filter, sort, and paginate on this value across tens of
-thousands of drugs). Drugs with no listed patent or exclusivity at all are
-excluded — nothing to report.
+Spans **both** small-molecule drugs (Orange Book) and biologics (Purple
+Book) in one ranked, paginated result set — see
+[Advanced search](#advanced-search) for how. Every result carries
+`estimatedGenericEntryDate` (the latest expiry date among that result's
+currently-listed patents and exclusivities, computed in the database, not
+fetched-then-computed in JS) and `source` (`orange_book` / `purple_book`,
+telling you which detail endpoint to follow). Results with no listed
+patent or exclusivity at all are excluded — nothing to report.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `q` | string, 1-200 chars | — | Substring match against brand name, generic name, or company name, case-insensitive |
-| `withinDays` | integer, 0-36500 | — | Only drugs whose estimate falls within this many days from now. No lower bound — already-past estimates are included too (still-actionable, already-open opportunities) |
-| `expiresAfter` / `expiresBefore` | date (`YYYY-MM-DD`) | — | Explicit generic-entry date-range bounds, inclusive. See [Advanced search](#advanced-search--drug-classification) below |
-| `modality` | enum | — | Exact match on structural drug type — see [Advanced search](#advanced-search--drug-classification) |
-| `drugClass` | string | — | Exact match on the best-effort mechanism/therapeutic tag (e.g. `"Statin"`) |
-| `applicationType` | `NDA` \| `ANDA` \| `BLA` | — | Exact match |
-| `dosageForm` | string | — | Exact match (e.g. `"TABLET"`) — see `GET /api/drugs/filter-options` for the current vocabulary |
-| `sort` | `entry_asc` \| `entry_desc` | `entry_asc` | Soonest-first by default |
+| `q` | string, 1-200 chars | — | Substring match against name, alternate name, or company/applicant name, case-insensitive |
+| `withinDays` | integer, 0-36500 | — | Only results whose estimate falls within this many days from now. No lower bound — already-past estimates are included too |
+| `expiresAfter` / `expiresBefore` | date (`YYYY-MM-DD`) | — | Explicit generic-entry date-range bounds, inclusive |
+| `modality`, `drugClass`, `applicationType`, `dosageForm`, `route`, `applicant`, `source`, `patentType`, `exclusivityCode` | comma-separated | — | Multi-value — OR within one param, AND across params. See [Advanced search](#advanced-search) |
+| `minPtaGapDays` | integer, ≥0 | — | Only results with a patent whose PTA correction is at least this many days — see [Advanced search](#advanced-search) |
+| `sort` | `entry_asc` \| `entry_desc` \| `pta_gap_desc` | `entry_asc` | Soonest-first by default |
 | `limit` | integer, 1-100 | 20 | Page size |
 | `offset` | integer, ≥0 | 0 | Pagination offset |
-
-All filters combine with AND. `withinDays` and `expiresAfter`/`expiresBefore`
-both filter the same underlying `estimatedGenericEntryDate` — they're not
-mutually exclusive, but a caller will typically use one or the other
-(`withinDays` for the UI's quick horizon chips, the explicit range for
-precise queries).
 
 ```bash
 curl "http://localhost:3000/api/drugs?withinDays=180&limit=10"
 curl "http://localhost:3000/api/drugs?q=eliquis"
+curl "http://localhost:3000/api/drugs?source=purple_book&modality=MONOCLONAL_ANTIBODY"
+curl "http://localhost:3000/api/drugs?minPtaGapDays=150&sort=pta_gap_desc"
 ```
 
 ```json
 {
   "data": [
     {
-      "id": "...", "brandName": "ELIQUIS", "genericName": "APIXABAN",
-      "applicationType": "NDA", "applicationNumber": "NDA202155", "productNumber": "001",
+      "id": "...", "source": "orange_book",
+      "name": "ELIQUIS", "alternateName": "APIXABAN",
+      "applicationType": "NDA", "licenseType": null,
       "dosageForm": "TABLET", "route": "ORAL", "strength": "2.5MG",
       "approvalDate": "2012-12-28",
       "modality": "SMALL_MOLECULE", "drugClass": null,
       "company": { "id": "...", "name": "BRISTOL MYERS SQUIBB CO..." },
       "estimatedGenericEntryDate": "2031-08-24",
-      "patentCount": 12, "exclusivityCount": 2
+      "patentCount": 12, "exclusivityCount": 2, "maxPtaGapDays": 411
     }
   ],
-  "pagination": { "limit": 20, "offset": 0, "total": 2847, "hasMore": true }
+  "pagination": { "limit": 20, "offset": 0, "total": 50729, "hasMore": true },
+  "facets": {
+    "modality": [{ "value": "SMALL_MOLECULE", "count": 47761 }, { "value": "MONOCLONAL_ANTIBODY", "count": 129 }],
+    "source": [{ "value": "orange_book", "count": 2847 }, { "value": "purple_book", "count": 637 }]
+  }
 }
 ```
 
-### `GET /api/drugs/:id` — full detail on one drug
+### `GET /api/drugs/:id` — full detail on one Orange Book drug
 
 Every patent and exclusivity on file, plus `genericEntryEstimate` — the
 product's core value-add made explicit and auditable, not a black box:
@@ -552,7 +760,53 @@ product's core value-add made explicit and auditable, not a black box:
 }
 ```
 
-`404` (structured, see below) if the id doesn't exist.
+`404` (structured, see below) if the id doesn't exist. A biologic id (from
+a `/api/drugs` result with `source: "purple_book"`) 404s here — use
+`GET /api/biologics/:id` instead.
+
+### `GET /api/biologics/:id` — full detail on one Purple Book biologic
+
+Same shape as the drug detail endpoint (patents, exclusivities,
+`genericEntryEstimate`), plus the BPCIA biosimilar network:
+`referenceProduct` (resolved, if matched), `referenceProductNameRaw` (the
+source's raw name when it couldn't be resolved — never silently dropped),
+and `biosimilarsAndInterchangeables` (products that reference this one).
+
+```bash
+curl "http://localhost:3000/api/biologics/<id>"
+```
+```json
+{
+  "data": {
+    "id": "...", "proprietaryName": "Cyltezo", "properName": "adalimumab-adbm",
+    "licenseType": "INTERCHANGEABLE", "center": "CDER",
+    "referenceProduct": { "id": "...", "proprietaryName": "Humira", "properName": "adalimumab" },
+    "referenceProductNameRaw": null,
+    "biosimilarsAndInterchangeables": [],
+    "patents": [], "exclusivities": [ { "code": "BPCIA_FIRST_INTERCHANGEABLE", "expirationDate": "2023-04-15", "...": "..." } ],
+    "genericEntryEstimate": { "date": "2023-04-15", "controllingType": "exclusivity", "...": "..." }
+  }
+}
+```
+
+### `GET /api/search/autocomplete` — name suggestions across both sources
+
+```bash
+curl "http://localhost:3000/api/search/autocomplete?q=hum"
+```
+```json
+{ "data": [{ "id": "...", "source": "purple_book", "name": "Humira", "alternateName": "adalimumab" }] }
+```
+
+### `GET /api/drugs/export` — CSV of the current filtered results
+
+Same filters as `GET /api/drugs`; `limit`/`offset` are ignored (everything
+matching, up to a 50,000-row safety cap). Returns `text/csv` with a
+`Content-Disposition: attachment` header.
+
+```bash
+curl "http://localhost:3000/api/drugs/export?minPtaGapDays=150" -o export.csv
+```
 
 ### Validation and errors
 
@@ -583,13 +837,17 @@ into a response.
 
 ### Design notes
 
-- **The list query is one SQL statement, not N+1.** A CTE computes each
-  drug's `estimated_generic_entry_date` via `GREATEST(MAX(patent dates),
-  MAX(exclusivity dates))` with a `GROUP BY`, then the outer query filters,
-  sorts, and paginates on that computed value, with `count(*) OVER()`
-  getting the total row count in the same round trip. Building this any
-  other way — fetch drugs, then fetch each one's patents/exclusivities to
-  filter/sort in JS — wouldn't scale past a few hundred rows.
+- **The list query is one SQL statement, not N+1 — and now one statement
+  across two tables, not two statements merged in JS.** A `combined` CTE
+  `UNION ALL`s a per-source sub-select (each computing
+  `estimated_generic_entry_date` via `GREATEST(MAX(patent dates),
+  MAX(exclusivity dates))` with its own `GROUP BY`), then the outer query
+  filters, sorts, and paginates on that one normalized result set, with
+  `count(*) OVER()` getting the total row count in the same round trip.
+  Merging two already-paginated/sorted lists in JS wouldn't paginate or
+  sort correctly across the combined set; building it any other way at
+  all — fetch everything, filter/sort in JS — wouldn't scale past a few
+  hundred rows.
 - **The search term is escaped before hitting `ILIKE`.** A literal `%` or
   `_` in a user's search (e.g. searching for a strength like `"50%"`)
   is escaped so it's matched as a literal character, not treated as a SQL
@@ -611,7 +869,7 @@ into a response.
 ```bash
 npm test              # run once
 npm run test:watch    # watch mode
-npm run test:coverage # with coverage (97% statements as of writing)
+npm run test:coverage # with coverage (91% statements as of writing)
 ```
 
 Tests run against a **real, separate Postgres database** (`patent_horizon_test`,
@@ -639,110 +897,244 @@ search matching (including the `%`-escaping case), every validation
 failure mode, and both success and 404 paths through the actual route
 handlers (not just the query functions underneath them).
 
-## Advanced search & drug classification
+## Drug classification
 
-Beyond the time-horizon and name search covered above, `/api/drugs` (and
-the "Advanced" panel in the web UI) supports narrowing results by
-structural drug type, therapeutic class, application type, dosage form, and
-an explicit generic-entry date range. Application type and dosage form come
-straight from the Orange Book source data. Modality and drug class don't —
-that data doesn't exist anywhere in the source, so it's derived.
+`/api/drugs` filters on structural drug type (`modality`) and best-effort
+therapeutic class (`drugClass`) for both Orange Book drugs and Purple Book
+biologics — neither field exists in either source, so both are derived
+from the product's name.
 
 ### How classification works
 
-`genericName` (the active-ingredient field) is classified two ways at
-ingestion time ([`src/lib/ingestion/orangeBook/load.ts`](src/lib/ingestion/orangeBook/load.ts)),
-using pharmaceutical naming-stem conventions ([INN/USAN](https://www.who.int/teams/health-product-and-policy-standards/inn) —
-the standardized suffix system drug names follow, e.g. every monoclonal
-antibody name ends in `-mab`, every statin in `-statin`):
+Names are classified using real pharmaceutical naming-stem conventions
+([INN/USAN](https://www.who.int/teams/health-product-and-policy-standards/inn)
+— the standardized suffix system drug names follow: every monoclonal
+antibody name ends in `-mab`, every statin in `-statin`, every cell therapy
+in `-cel`, and so on) — sourced from the actual WHO INN Stem Book and the
+AMA's 2021 nomenclature updates, not invented ad hoc, and every stem
+checked against this project's real data (~2,700 distinct Orange Book
+`genericName` values, 658 distinct Purple Book `Proper Name` values)
+before being added:
 
-- **`modality`** ([`src/lib/classification/modality.ts`](src/lib/classification/modality.ts)) — a small,
-  fixed taxonomy: `SMALL_MOLECULE` (the default), `PEPTIDE`,
-  `OLIGONUCLEOTIDE`, `MONOCLONAL_ANTIBODY`, `OTHER`. Modeled as an enum
-  because the vocabulary is small and stable.
-- **`drugClass`** ([`src/lib/classification/drugClass.ts`](src/lib/classification/drugClass.ts)) — an
-  open-ended, best-effort mechanism/therapeutic tag (`"Statin"`, `"ACE
-  inhibitor"`, `"Kinase inhibitor"`, ...), nullable free text rather than an
-  enum, for the same reason `Exclusivity.code` is a free string: the real
-  vocabulary is larger and less reliably detectable than modality. A drug
-  can plausibly belong to more than one class; the schema stores one
-  best-effort tag, so the first matching rule (in priority order) wins.
+- **`modality`** ([`src/lib/classification/modality.ts`](src/lib/classification/modality.ts))
+  — a small, fixed, shared taxonomy (the `Modality` enum, used by both
+  `Drug` and `BiologicProduct`): `SMALL_MOLECULE`, `PEPTIDE`,
+  `OLIGONUCLEOTIDE`, `MONOCLONAL_ANTIBODY`, `CELL_THERAPY`, `GENE_THERAPY`,
+  `VACCINE`, `OTHER`, `UNCLASSIFIED`.
+- **`drugClass`** ([`src/lib/classification/drugClass.ts`](src/lib/classification/drugClass.ts))
+  — an open-ended, best-effort mechanism/therapeutic tag (`"Statin"`,
+  `"ACE inhibitor"`, `"Clotting factor"`, `"Immunoglobulin"`, ...),
+  nullable free text rather than an enum, for the same reason
+  `Exclusivity.code` is a free string. A drug can plausibly belong to more
+  than one class; the schema stores one best-effort tag, so the first
+  matching rule (in priority order) wins.
 
-Both are **heuristics, not authoritative** — false negatives are possible
-for ingredients that don't follow standard INN naming. Every stem rule that
-shipped was checked against this project's real ~2,700 distinct
-`genericName` values before being added, specifically to catch coincidental
-suffix matches:
+Both are **heuristics, not authoritative**. The matching engine picks the
+**longest/most specific matching stem across the whole name**, not just
+whichever rule happens to be checked first — this matters for real
+combination cases: `"elivaldogene autotemcel"` (a real approved gene
+therapy) has one token ending in the gene-therapy stem `-gene` (4 chars)
+and another ending in the cell-therapy stem `-cel` (3 chars); the longer,
+more specific match wins, which is also how FDA itself categorizes these
+ex-vivo gene-modified-cell products. Real naming collisions were caught by
+checking against actual data, the same discipline as before:
 
 - Naive substring matching on `-rsen` (the oligonucleotide stem) matched
-  **"ARSENIC TRIOXIDE"** — "arsenic" contains "rsen" mid-word but doesn't
-  *end* with it. Fixed by matching stems only as suffixes of individual
-  whitespace/punctuation-separated tokens
-  ([`tokenize.ts`](src/lib/classification/tokenize.ts)), never as a
-  substring anywhere in the raw string.
-- `-statin` alone would also tag **cilastatin** (a renal enzyme inhibitor,
-  unrelated to cholesterol), **nystatin** (an antifungal), and
-  **pentostatin** (an oncology drug) — real drugs that coincidentally end in
-  "statin" without being statins. Excluded explicitly per stem rule.
+  **"ARSENIC TRIOXIDE"** — fixed by matching stems only as token suffixes
+  ([`tokenize.ts`](src/lib/classification/tokenize.ts)), never a substring
+  anywhere in the raw string.
+- `-statin` alone would also tag **cilastatin**, **nystatin**, and
+  **pentostatin** — real drugs that coincidentally end in "statin" without
+  being statins. Excluded explicitly per stem rule.
+- The real CAR-T infix **`-cabtagene`** (axicabtagene, brexucabtagene,
+  ciltacabtagene, idecabtagene, lisocabtagene, obecabtagene — six real
+  approved CAR-T therapies, all FDA-labeled cell therapy) happens to end in
+  the same four letters as the gene-therapy `-gene` stem. Resolved without
+  a special-case exclusion: `-cabtagene` is declared as its own, longer,
+  more specific stem (9 chars vs. 4), so it already wins under the
+  longest-match rule.
 
-Existing rows are backfilled with `npm run classify:drugs` (safe to re-run
-any time, e.g. after adding a new stem rule — it always recomputes from the
-current `genericName`, never accumulates drift; supports `--dry-run` and
-`--limit N` for previewing before writing).
+**Preprocessing before matching**: a bounded, known list of ~40 common
+salt/ester-form and hydration-state modifier words (`sodium`,
+`hydrochloride`, `besylate`, `monohydrate`, ...) is stripped before
+matching, since these are appended to the active-ingredient name and would
+otherwise become their own unclassifiable (or stem-colliding) token — e.g.
+`"atorvastatin CALCIUM"` correctly still matches the `-statin` stem after
+`calcium` is stripped. Combination products (multiple active ingredients)
+need no special handling beyond this — the tokenizer already flattens
+every ingredient's words into one list, and the longest-match rule checks
+all of them.
 
-### A real data limitation, not a bug: zero monoclonal antibodies
+### The fallback is source-aware — this was a real bug, now fixed
 
-Searching `modality=MONOCLONAL_ANTIBODY` currently returns **zero results**.
-This is expected, not a classifier failure: monoclonal antibodies are
-biologics, regulated under a BLA (Biologics License Application) rather
-than an NDA/ANDA, and FDA tracks BLA patent/exclusivity data in a *separate*
-publication — the **Purple Book** — which this project does not ingest (see
-[Data ingestion](#data-ingestion-fda-orange-book)). The `-mab` stem rule and
-the `MONOCLONAL_ANTIBODY` enum value are both still shipped, deliberately,
-so the classifier and the advanced-search filter vocabulary are ready the
-day a Purple Book source ever gets ingested — the alternative (removing the
-option because it's currently empty) would silently hide that this is a
-known, documented gap rather than an intentional absence. The same
-reasoning applies to `applicationType=BLA`, which is also always empty
-today.
+`classifyModality(name, fallback)` takes its "nothing matched" fallback as
+a parameter rather than hardcoding it, because "no stem matched" means
+something different depending on where the name came from:
+
+- **Orange Book** (NDA/ANDA, small-molecule regulatory pathway): the
+  pathway itself is strong evidence of small-molecule chemistry, so "no
+  stronger signal" genuinely does mean `SMALL_MOLECULE` in the vast
+  majority of real cases. Ingestion passes `fallback: "SMALL_MOLECULE"`.
+- **Purple Book** (BLA, biologics pathway): the product is *definitely not*
+  a small molecule — clotting factors, immunoglobulins, allergenic
+  extracts, antivenoms have no distinct INN suffix of their own, but they
+  are unambiguously biologics. Assuming `SMALL_MOLECULE` here would be
+  actively wrong, not just imprecise. Ingestion passes `fallback:
+  "UNCLASSIFIED"` — an honest "no confident tag," not a wrong guess.
+
+This is the actual origin of the `UNCLASSIFIED` enum value: previously
+(before Purple Book existed) the fallback was unconditionally
+`SMALL_MOLECULE`, which only ever looked correct because the classifier had
+only ever seen Orange Book data. A keyword-based supplement (matching a
+whole token, not a suffix — the same mechanism `VACCINE` already used for
+the literal word "vaccine") catches four more real, dominant Purple Book
+categories that have no naming-stem convention at all (clotting factors,
+immunoglobulins, allergenic extracts, antivenoms/antitoxins), bucketed as
+`OTHER` rather than left unclassified — the same reasoning already applied
+to Orange Book's heparinoids. Real result after backfilling every existing
+row (`npm run classify:drugs`, safe to re-run any time — see below):
+
+| Source | Unclassified before | Unclassified after |
+|---|---|---|
+| Orange Book (48,502 drugs) | 0.0% | 0.0% (0 rows changed — the engine rewrite didn't affect small-molecule outcomes) |
+| Purple Book (2,227 biologics) | 80.6% | 64.7% (354 rows moved to a real `OTHER`/class tag) |
+
+64.7% still unclassified for Purple Book is reported honestly, not
+massaged down further — it reflects real biologic categories (specific
+clotting-factor variants, named allergen panels, blood/plasma products,
+...) that genuinely don't follow a detectable naming convention, not a
+classifier shortfall worth chasing with more special-casing.
+
+### Real biologics are now classified correctly — no longer a documented gap
+
+Searching `modality=MONOCLONAL_ANTIBODY` now returns real results —
+**213** as of the current ingestion (Keytruda, Humira, Dupixent, and
+others) — now that Purple Book is ingested (see
+[Data ingestion: FDA Purple Book](#data-ingestion-fda-purple-book)). This
+used to be a documented, permanent zero-result gap; it's the concrete
+payoff of adding the second source.
+
+Existing rows are backfilled with `npm run classify:drugs`, which now
+covers **both** `Drug` and `BiologicProduct` (using the correct
+source-specific fallback for each) — safe to re-run any time, e.g. after
+adding a new stem rule; it always recomputes from the current name, never
+accumulates drift. Supports `--dry-run` and `--limit N`.
+
+## Advanced search
+
+`GET /api/drugs` (and the "Advanced" panel in the web UI) searches and
+filters across **both** sources at once — `Drug` and `BiologicProduct` —
+ranked and paginated together, not as two separate lists.
+
+### How it's unified across two tables
+
+`listDrugs()` ([`src/lib/drugs/queries.ts`](src/lib/drugs/queries.ts))
+builds one `combined` CTE: a `UNION ALL` of a per-source sub-select, each
+computing the same `estimated_generic_entry_date` / `patent_count` /
+`exclusivity_count` / `max_pta_gap_days` aggregation against that source's
+own `Patent`/`Exclusivity` rows, normalized into one shared shape
+(`SearchResultSchema` — `source`, source-neutral `name`/`alternateName`
+rather than force-fitting Orange Book's own field names onto biologics,
+and two source-specific, mutually-exclusive fields — `applicationType` and
+`licenseType` — rather than force-fitting one vocabulary onto the other).
+The same filter/sort/pagination logic then applies uniformly regardless of
+which table a result came from. Detail pages stay **separate**
+(`GET /api/drugs/:id` vs. `GET /api/biologics/:id`) — their actual shapes
+genuinely differ (license type, the reference-product network) — unifying
+the *list* but not force-fitting the *detail* view.
+
+### Filters — AND across categories, OR within one
+
+Every filter below accepts a comma-separated list of values (OR within
+that filter); separate filters combine with AND. `modality`, `drugClass`,
+`applicationType`, `dosageForm`, `route`, `applicant`, `source`,
+`patentType`, `exclusivityCode` all work this way — a genuine upgrade from
+single-value equality filtering, since e.g. "peptides OR monoclonal
+antibodies, from either source" is a real, useful query. `patentType`
+(`substance`/`product`/`use`) and `exclusivityCode` are `EXISTS` subqueries
+against `Patent`/`Exclusivity`, not plain column filters, since they
+depend on a result's *children*, not its own row. `expiresAfter` /
+`expiresBefore` (an explicit date range) and `withinDays` (the UI's quick
+horizon chips) both filter the same underlying estimate and can combine.
+
+### The PTA gap filter — made prominent, not buried
+
+`minPtaGapDays` is the single clearest demonstration of this product's
+entire reason to exist: it filters on `expiryAdjustmentDays` (already
+computed per-patent, just never exposed as a filter before). It gets
+first-class UI treatment to match — its own visible table column (color-
+coded, not a small muted number), a dedicated `sort=pta_gap_desc` option,
+and a green-highlighted input in the filter panel — rather than living as
+one filter among nine others. Real example: filtering `minPtaGapDays=150`
+finds **Pradaxa** (dabigatran) and **Kisqali** (ribociclib) with real
++181-day and +184-day corrections verified live against the running app.
+
+### Autocomplete
+
+`GET /api/search/autocomplete?q=...` — Postgres trigram (`pg_trgm`)
+similarity search across both sources' name columns
+(`migration 20260814190000_add_search_extensions` adds the extension and
+GIN indexes). Results are de-duplicated by name (`DISTINCT ON`) before
+ranking — a brand name can repeat across 10+ strength/presentation rows
+(Humira alone), and a dropdown showing the same name ten times isn't a
+useful suggestion list; the raw `id` returned is one real, navigable row
+for that name, not the only one.
+
+**Search infra decision: stayed on Postgres, no dedicated search
+service.** Combined row count is ~50,700 (48,502 Orange Book + 2,227
+Purple Book) — two orders of magnitude below where a separate search
+service's relevance/scale features would earn their operational cost (a
+second service to deploy, monitor, keep in sync) for what's fundamentally
+prefix/substring name lookup in an internal analyst tool, not consumer
+full-text search. `pg_trgm` gives typo-tolerant matching with a plain
+Postgres extension and no new infrastructure. Revisit this if row count
+grows by 10-100x or genuine relevance ranking becomes a real requirement.
+
+### Faceted result counts
+
+Every `/api/drugs` response includes `facets`: result counts per value for
+five filter dimensions (`modality`, `source`, `applicationType`,
+`dosageForm`, `route`), each scoped by every *other* currently-active
+filter (its own filter is excluded from its own count query, so picking a
+value shows what the *other* options would leave, not a frozen snapshot).
+Deliberately **not** computed for `patentType`/`exclusivityCode` (`EXISTS`-
+based, not a plain column) or `applicant`/`drugClass`/`exclusivityCode`
+(free-text/high-cardinality) — a scope cut, not an oversight: each facet
+query re-materializes the full `combined` CTE (acceptable at this data
+volume; revisit with a materialized view if that ever changes), so the
+facet set is limited to the dimensions an analyst actually scans while
+narrowing results.
+
+### CSV export
+
+`GET /api/drugs/export` accepts the exact same filters as `/api/drugs`
+(everything except `limit`/`offset`, which are overridden internally —
+this streams *every* matching row up to a 50,000-row safety cap, not one
+page) and reuses the identical query-building code, so the exported rows
+always exactly match whatever's on screen.
 
 ### `GET /api/drugs/filter-options` — current filter vocabulary
 
-Powers the advanced-search UI's select inputs. `modalities` and
-`applicationTypes` return every possible enum value (including
-`MONOCLONAL_ANTIBODY` / `BLA`, per above); `drugClasses` returns the fixed
-set of class labels the classifier can produce; `dosageForm` is genuinely
-open-ended free text from the source (117 distinct values as of writing),
-so that one is a live `DISTINCT` query against the current data rather than
-a hardcoded list.
-
-```bash
-curl "http://localhost:3000/api/drugs/filter-options"
-```
-```json
-{
-  "data": {
-    "modalities": [
-      { "value": "SMALL_MOLECULE", "label": "Small molecule" },
-      { "value": "PEPTIDE", "label": "Peptide" },
-      { "value": "OLIGONUCLEOTIDE", "label": "Oligonucleotide" },
-      { "value": "MONOCLONAL_ANTIBODY", "label": "Monoclonal antibody" },
-      { "value": "OTHER", "label": "Other / complex molecule" }
-    ],
-    "drugClasses": ["Statin", "Angiotensin receptor blocker (ARB)", "..."],
-    "applicationTypes": ["NDA", "ANDA", "BLA"],
-    "dosageForms": ["CAPSULE", "CAPSULE, EXTENDED RELEASE", "..."]
-  }
-}
-```
+Powers the advanced-search UI's inputs. Fixed vocabularies (`modalities`,
+`applicationTypes`, `source`, `patentTypes`) return every possible value,
+including ones with zero current matches (e.g. `applicationType=BLA` is
+still offered even though Orange Book itself never has one — the same
+"ready for when the data shows up, not hidden because it's currently
+empty" reasoning as `MONOCLONAL_ANTIBODY` used to require, before Purple
+Book made it moot). `dosageForm`/`route`/`applicant` are genuinely
+open-ended free text, combined live across both sources (117 distinct
+dosage forms as of writing); `exclusivityCode` is a live, growing
+vocabulary spanning Orange Book codes (`NCE`, `ODE-*`, `PED`, ...) and the
+new BPCIA codes together.
 
 ## Web UI
 
 The primary screen — `/` — is the thing a pharma business analyst is meant
-to have open daily: a dense, sortable, filterable table of every drug with
-a known patent or exclusivity, ranked by estimated generic-entry date.
-Clicking a row (or `/drugs/:id` directly) opens the full picture for that
-drug: every patent and exclusivity, and the same transparent
+to have open daily: a dense, sortable, filterable table spanning both
+small-molecule drugs and biologics with a known patent or exclusivity,
+ranked by estimated generic-entry date. Clicking a row opens the full
+picture for that result — `/drugs/:id` for a drug, `/biologics/:id` for a
+biologic — every patent and exclusivity, and the same transparent
 `genericEntryEstimate` the API returns, rendered as the headline of the
 page rather than buried in a table.
 
@@ -780,13 +1172,42 @@ page rather than buried in a table.
 - **`/` focuses search** (unless already typing somewhere) — a small
   power-user affordance for a screen meant to be used many times a day.
 - **The Advanced panel follows the same URL-is-truth pattern** as the rest
-  of the screen — modality/drugClass/applicationType/dosageForm/date-range
-  are just more query params, so an advanced-filtered view is bookmarkable
-  like any other. The panel auto-expands on load if any of those params are
-  already set (e.g. from a shared link), and its toggle button shows a
-  count badge of how many advanced filters are active. Select options come
-  from `GET /api/drugs/filter-options`, fetched server-side alongside the
-  drug list itself — no client-side waterfall for the filter UI either.
+  of the screen — every filter (modality, drugClass, applicationType,
+  source, patentType, dosageForm, route, applicant, exclusivityCode,
+  date-range, minPtaGapDays) is just more query params, so an advanced-
+  filtered view is bookmarkable like any other. The panel auto-expands on
+  load if any of those params are already set (e.g. from a shared link),
+  and its toggle button shows a count badge of how many advanced filters
+  are active. Select options come from `GET /api/drugs/filter-options`,
+  fetched server-side alongside the results themselves — no client-side
+  waterfall for the filter UI either.
+- **One reusable `MultiSelectFilter` component powers all nine filter
+  dimensions**, not nine one-off implementations — a popover with a
+  search-to-narrow box (useful past a couple dozen options, e.g.
+  dosageForm's 117 or exclusivityCode's ~470) and a checkbox per option,
+  each annotated with its live facet count so picking a value shows what
+  it would actually leave, not just its name.
+- **The PTA gap gets a real column, not a buried filter** — the same
+  "make it prominent" principle the API design applies: a dedicated,
+  color-coded `PTA Gap` column between the patent/exclusivity counts and
+  the entry date, its own click-to-sort header, and a green-highlighted
+  filter input, since it's the single clearest demonstration of what this
+  product is for.
+- **Autocomplete suggests, the debounced search commits** — two related
+  but distinct behaviors on the same input: typing triggers a 300ms-
+  debounced dropdown of name suggestions (`GET /api/search/autocomplete`)
+  *and* commits the raw text as the `q` filter; picking a suggestion
+  short-circuits straight to a committed search for that exact name.
+- **Source and license-type badges make provenance visible at a glance** —
+  every row shows which FDA publication it came from and, for biologics,
+  its BPCIA license type (351(a) / biosimilar / interchangeable),
+  distinct-but-adjacent to the existing NDA/ANDA/BLA badge that only
+  applies to the Orange Book side.
+- **CSV export is a plain link, not a client-side download** — `<a
+  href="/api/drugs/export?...">` with the current URL's query string
+  carried straight through; the server's `Content-Disposition` header
+  triggers the browser's normal download flow, so the exported file always
+  exactly matches whatever filters are currently applied on screen.
 - **A real bug this surfaced:** `notFound()` inside a route wrapped by
   `loading.tsx` can't actually set a `404` status — by the time
   `notFound()` runs, the Suspense fallback has already started streaming
@@ -899,8 +1320,8 @@ since they have no request object to read from directly.
 
 ### Tests
 
-`npm test` now includes `tests/auth.test.ts` (56 tests total across the
-suite): the analyst-allowlist logic as pure-function unit tests (not an
+`npm test` includes `tests/auth.test.ts` (158 tests total across the full
+suite as of writing): the analyst-allowlist logic as pure-function unit tests (not an
 env-var-dependent integration test — `ANALYST_EMAILS` is deliberately
 empty in `.env.test`), `getSessionUser()` behavior including a garbage
 cookie, and — the security-critical part — that Better Auth's admin
@@ -939,18 +1360,21 @@ specific to this codebase.
 ```
 prisma/schema.prisma       Data model (single source of truth for the DB)
 prisma/migrations/         Generated SQL migrations (checked into git)
-src/app/(home)/page.tsx    Primary screen: patent-expiration table (route group — see "Web UI")
+src/app/(home)/page.tsx    Primary screen: unified patent-expiration table (route group — see "Web UI")
 src/app/drugs/[id]/        Drug detail screen: full patent/exclusivity picture
+src/app/biologics/[id]/    Biologic detail screen: same, plus the BPCIA reference-product network
 src/app/login/, signup/    Sign in / create account pages
 src/app/team/              Analyst-only user management (page.tsx + Server Actions in actions.ts)
 src/app/api/auth/[...all]/ Better Auth's own routes (sign-in, sign-up, session, admin ops, ...)
 src/app/api/health/        GET /api/health — DB connectivity check
-src/app/api/drugs/         GET /api/drugs, GET /api/drugs/[id] — the product API
+src/app/api/drugs/         GET /api/drugs (unified search), /[id], /filter-options, /export
+src/app/api/biologics/     GET /api/biologics/[id] — biologic detail
+src/app/api/search/        GET /api/search/autocomplete
 src/app/api/openapi.json/  Serves the generated OpenAPI 3.1 spec
 src/app/docs/              Interactive API docs (Scalar), reads the spec above
 src/proxy.ts               Optimistic signed-out redirect (Next 16's "middleware", renamed)
 src/components/auth/       Login/signup forms, header user menu, team management table
-src/components/drugs/      UI: table, filter bar, detail-page cards, shared badges
+src/components/drugs/      UI: table, filter bar (incl. MultiSelectFilter), detail-page cards, badges
 src/lib/auth.ts            Better Auth server config (roles, hooks, plugins)
 src/lib/auth-client.ts     Better Auth client (used by login/signup/team UI)
 src/lib/session.ts         requireUser()/requireAnalyst()/getSessionUser() — the real access control
@@ -958,12 +1382,17 @@ src/lib/analystAllowlist.ts  Pure allowlist logic behind ANALYST_EMAILS (unit-te
 src/lib/prisma.ts          Shared Prisma client singleton
 src/lib/format.ts          Date/relative-time/urgency formatting shared by the UI
 src/lib/api/               Shared API infra: error envelope, query-param parsing
-src/lib/drugs/             Zod schemas + DB queries backing the drugs API and UI
+src/lib/drugs/             Zod schemas + unified search/detail queries backing the API and UI
+src/lib/classification/    Modality/drugClass heuristics, shared by both ingestion pipelines
 src/lib/openapi/           Builds the OpenAPI doc from the Zod schemas above
-src/lib/ingestion/orangeBook/   Orange Book ingestion pipeline (parse/load/orchestrate)
-src/lib/ingestion/pta/     USPTO Patent Term Adjustment enrichment (client/enrich/orchestrate)
+src/lib/ingestion/shared.ts     mapWithConcurrency/dedupeByKey — shared by both pipelines below
+src/lib/ingestion/orangeBook/   Orange Book (small-molecule) ingestion pipeline
+src/lib/ingestion/purpleBook/   Purple Book (biologics) ingestion pipeline — product CSV + patent-list HTML
+src/lib/ingestion/pta/     USPTO Patent Term Adjustment enrichment (client/enrich/orchestrate) — both sources
 scripts/ingest-orange-book.ts   CLI entrypoint: npm run ingest:orange-book
+scripts/ingest-purple-book.ts   CLI entrypoint: npm run ingest:purple-book
 scripts/enrich-pta.ts      CLI entrypoint: npm run enrich:pta
+scripts/classify-drugs.ts  CLI entrypoint: npm run classify:drugs (both sources)
 tests/                     Vitest suite — runs against a real, separate test database
 src/generated/prisma/      Generated Prisma Client (git-ignored, regenerated on install)
 docker-compose.yml         Optional: run Postgres in Docker instead of natively
@@ -1047,9 +1476,12 @@ npm run db:migrate    # create + apply a new migration (prisma migrate dev)
 npm run db:studio     # open Prisma Studio (GUI for the database)
 npm run ingest:orange-book            # download + load the current FDA Orange Book
 npm run ingest:orange-book -- --file ./orangebook.zip   # load from a local zip instead
-npm run enrich:pta                    # enrich all unenriched patents with USPTO PTA data
+npm run ingest:purple-book            # download + load the current FDA Purple Book (product CSV + patent-list HTML)
+npm run ingest:purple-book -- --url <csv-url>          # load from an explicit monthly file instead
+npm run ingest:purple-book -- --skip-patent-list       # product data only, skip the HTML scrape
+npm run enrich:pta                    # enrich all unenriched patents with USPTO PTA data (both sources)
 npm run enrich:pta -- --limit 20      # sample run: next 20 patents only
-npm run classify:drugs                # backfill modality/drugClass for existing drugs
+npm run classify:drugs                # backfill modality/drugClass for existing drugs + biologics
 npm run classify:drugs -- --dry-run   # preview counts without writing
 npm test              # run the test suite once (needs patent_horizon_test — see "API" section)
 npm run test:watch    # test suite in watch mode
@@ -1113,3 +1545,31 @@ No servers to provision, no Dockerfiles to maintain for the app itself.
   `User`/`Session`/`Account`/`Verification` models, the same way the
   `IngestionRecord` `CHECK` constraint above is preserved by never
   regenerating over it.
+- `Patent` and `Exclusivity` also have hand-added `CHECK` constraints now
+  (exactly one of `drugId`/`biologicProductId`), plus hand-added plain
+  `@@unique` indexes on the biologic side (`prisma/migrations/20260814180000_add_purple_book_biologics`)
+  — same "not expressible in `schema.prisma` alone, re-add if regenerated
+  from scratch" caveat as `IngestionRecord`'s. If you're tempted to add a
+  compound unique index spanning *both* nullable FK columns together to
+  "cover both cases in one index," don't — see the "Extending to a second
+  product type" subsection of Data model for why that silently enforces
+  nothing.
+- **Any date-only value parsed via a plain `new Date(someString)` where
+  `someString` has no explicit timezone is a real, live bug risk** — it
+  resolves in whatever timezone the server happens to run in, not UTC. Two
+  real instances of this were found and fixed in the Purple Book pipeline
+  (see that section) purely by manually spot-checking a live API response
+  against a real drug; neither was caught by an isolated unit check run in
+  the same timezone the bug depended on. Always re-anchor via
+  `new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))` (or
+  parse the calendar fields directly, as the `D-Mon-YY` branch of
+  `parsePurpleBookDate` already does) rather than trusting a locale-format
+  date string's parsed instant directly.
+- **Fetching FDA's Purple Book (either the CSV or the patent-list HTML)
+  requires a browser-like `User-Agent` header** — a bare `fetch`/`curl`
+  gets silently blocked by FDA's WAF, which returns a `200` "FDA Apology"
+  HTML page rather than an error status. Both ingestion functions already
+  check the response body for that page and throw explicitly rather than
+  treating a apology-page `200` as success; keep that check if you touch
+  the fetch logic. Orange Book's own `fda.gov/media/...` URL does not need
+  this — it's a different subdomain with no such WAF rule observed.
