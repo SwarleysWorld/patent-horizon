@@ -27,9 +27,14 @@ export function UserMenu({ user }: { user: AuthenticatedUser | null }) {
   return (
     <div className="flex items-center gap-3 text-sm">
       {user.tier === "analyst" && (
-        <Link href="/team" className="text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
-          Team
-        </Link>
+        <>
+          <Link href="/data" className="text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+            Data
+          </Link>
+          <Link href="/team" className="text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+            Team
+          </Link>
+        </>
       )}
       <span
         className="rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 ring-1 ring-inset ring-zinc-300 dark:text-zinc-400 dark:ring-zinc-700"

@@ -1365,6 +1365,7 @@ src/app/drugs/[id]/        Drug detail screen: full patent/exclusivity picture
 src/app/biologics/[id]/    Biologic detail screen: same, plus the BPCIA reference-product network
 src/app/login/, signup/    Sign in / create account pages
 src/app/team/              Analyst-only user management (page.tsx + Server Actions in actions.ts)
+src/app/data/              Analyst-only ingestion/enrichment status page — see "Operating this yourself"
 src/app/api/auth/[...all]/ Better Auth's own routes (sign-in, sign-up, session, admin ops, ...)
 src/app/api/health/        GET /api/health — DB connectivity check
 src/app/api/drugs/         GET /api/drugs (unified search), /[id], /filter-options, /export
@@ -1465,6 +1466,32 @@ automatically an Analyst, with access to `/team` for adding anyone else.
 - Health check (no auth required): [http://localhost:3000/api/health](http://localhost:3000/api/health)
   — returns `{"status":"ok","database":"connected"}` when the DB is reachable.
 
+## Operating this yourself
+
+The day-to-day loop for whoever owns this product — no code changes needed for any of it.
+
+1. **Start the site.**
+   ```bash
+   npm run dev
+   ```
+   Open [http://localhost:3000](http://localhost:3000). (For a production deploy, see [Deploying](#deploying) below — the loop is the same either way, just run these commands against whichever database `DATABASE_URL` points at.)
+
+2. **Refresh the data.** One command re-downloads both FDA sources and reclassifies everything — takes a minute or two:
+   ```bash
+   npm run refresh:data
+   ```
+   This is safe to run anytime, as often as you like — every pipeline upserts on a natural key, so re-running never creates duplicates, and a bad/unreachable source for one step doesn't corrupt what's already loaded.
+
+3. **Run patent-term enrichment.** This is the one step that's slow — USPTO allows one request at a time, so a full pass over every un-enriched patent takes on the order of an hour or two, not minutes:
+   ```bash
+   npm run enrich:pta
+   ```
+   It's fully resumable: stop it (Ctrl-C, closing the terminal, a restart) at any point and re-run the same command — already-enriched patents are skipped automatically, nothing is re-queried or re-billed. For a long-running production use, run it under whatever process supervisor you're already using (`pm2`, a systemd unit, a scheduled task on the deploy platform) rather than a bare foreground terminal.
+
+4. **Watch it happen.** Sign in as an Analyst and open **`/data`** — shows when each source was last refreshed and what it loaded, plus live enrichment progress (overall and per-source), refreshing itself every 20 seconds while the tab is open. No terminal or database access needed; this is the page to bookmark and leave open during a long enrichment run.
+
+There's deliberately no "click a button to start ingestion" control on that page — these are commands you run, not background jobs a web request kicks off, since a multi-hour process doesn't fit a normal request/response cycle (and would silently fail on most hosting platforms' request timeouts). `/data` is purely for watching; the commands above are for doing.
+
 ## Useful commands
 
 ```bash
@@ -1479,6 +1506,7 @@ npm run ingest:orange-book -- --file ./orangebook.zip   # load from a local zip 
 npm run ingest:purple-book            # download + load the current FDA Purple Book (product CSV + patent-list HTML)
 npm run ingest:purple-book -- --url <csv-url>          # load from an explicit monthly file instead
 npm run ingest:purple-book -- --skip-patent-list       # product data only, skip the HTML scrape
+npm run refresh:data                  # both ingests + classification, in order, in one command
 npm run enrich:pta                    # enrich all unenriched patents with USPTO PTA data (both sources)
 npm run enrich:pta -- --limit 20      # sample run: next 20 patents only
 npm run classify:drugs                # backfill modality/drugClass for existing drugs + biologics

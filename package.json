@@ -14,6 +14,7 @@
     "ingest:purple-book": "tsx scripts/ingest-purple-book.ts",
     "enrich:pta": "tsx scripts/enrich-pta.ts",
     "classify:drugs": "tsx scripts/classify-drugs.ts",
+    "refresh:data": "tsx scripts/refresh-data.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

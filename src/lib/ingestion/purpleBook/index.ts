@@ -184,7 +184,13 @@ export async function runPurpleBookIngestion(
       data: {
         status,
         finishedAt,
-        drugsUpserted: 0,
+        // IngestionRun.drugsUpserted is a generically-named "primary
+        // entity count" column shared across pipelines (same reuse as
+        // patentsUpserted/exclusivitiesUpserted below) — biologic products
+        // belong here, not a hardcoded 0. Previously zeroed out, which
+        // made the /data monitoring page show "Products: 0" for a run that
+        // had actually loaded thousands.
+        drugsUpserted: loadResult.productsUpserted,
         patentsUpserted: loadResult.patentsUpserted,
         exclusivitiesUpserted: loadResult.exclusivitiesUpserted,
         rowsSkipped: totalSkipped,
