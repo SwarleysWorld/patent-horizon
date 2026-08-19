@@ -23,10 +23,23 @@ function escapeLikePattern(term: string): string {
 // One row per patent/exclusivity, used by both getDrugById and
 // getBiologicById's genericEntryEstimate.
 function computeGenericEntryEstimate(
-  patents: { id: string; patentNumber: string; useCode: string; effectiveExpiryDate: Date; delistedAt: Date | null }[],
+  patents: {
+    id: string;
+    patentNumber: string;
+    useCode: string;
+    effectiveExpiryDate: Date;
+    delistedAt: Date | null;
+    expiryAdjustmentDays: number | null;
+  }[],
   exclusivities: { id: string; code: string; expirationDate: Date }[],
 ): GenericEntryEstimate {
-  let best: { date: Date; type: "patent" | "exclusivity"; id: string; label: string } | null = null;
+  // Exclusivities are FDA-final the moment they're granted — there's no
+  // USPTO-style adjustment process for them, so a controlling exclusivity
+  // is always "confirmed". A controlling patent is "confirmed" only once
+  // its expiryAdjustmentDays has actually been checked against USPTO
+  // records (see src/lib/ingestion/pta/) — until then its effectiveExpiryDate
+  // is just Orange/Purple Book's own listed figure and could still shift.
+  let best: { date: Date; type: "patent" | "exclusivity"; id: string; label: string; confirmed: boolean } | null = null;
 
   for (const p of patents) {
     if (p.delistedAt) continue; // no longer a live barrier
@@ -36,13 +49,14 @@ function computeGenericEntryEstimate(
         type: "patent",
         id: p.id,
         label: `Patent ${p.patentNumber}${p.useCode ? ` (use code ${p.useCode})` : ""}`,
+        confirmed: p.expiryAdjustmentDays !== null,
       };
     }
   }
 
   for (const e of exclusivities) {
     if (!best || e.expirationDate > best.date) {
-      best = { date: e.expirationDate, type: "exclusivity", id: e.id, label: `Exclusivity ${e.code}` };
+      best = { date: e.expirationDate, type: "exclusivity", id: e.id, label: `Exclusivity ${e.code}`, confirmed: true };
     }
   }
 
@@ -52,6 +66,7 @@ function computeGenericEntryEstimate(
       controllingType: null,
       controllingId: null,
       controllingLabel: null,
+      dateConfidence: null,
       basis: "No patents or exclusivities are currently listed — no known barrier to generic entry.",
     };
   }
@@ -61,7 +76,12 @@ function computeGenericEntryEstimate(
     controllingType: best.type,
     controllingId: best.id,
     controllingLabel: best.label,
-    basis: `The latest-expiring ${best.type} (${best.label}) determines this estimate — everything else listed expires on or before ${toDateString(best.date)}.`,
+    dateConfidence: best.confirmed ? "confirmed" : "pending_verification",
+    basis: best.confirmed
+      ? `The latest-expiring ${best.type} (${best.label}) determines this estimate — everything else listed expires on or before ${toDateString(best.date)}.`
+      : `The latest-expiring ${best.type} (${best.label}) determines this estimate, but its expiry has not yet been checked against USPTO Patent Term Adjustment records — this date is still ${
+          best.type === "patent" ? "the source's own listed figure" : "unverified"
+        } and could move once verified. Everything else listed expires on or before ${toDateString(best.date)}.`,
   };
 }
 
@@ -83,8 +103,14 @@ function computeGenericEntryEstimate(
 // currently computing — the same filter-building logic powers both the
 // main query and every facet query, so they can never drift apart.
 
+// Two-level CTE: combined_raw computes the raw aggregates per product
+// (including max_patent_date split into "any" vs "USPTO-confirmed only"),
+// then combined derives estimated_generic_entry_date and date_confidence
+// from those — a CASE expression can't reference a sibling aggregate
+// computed in the same SELECT, so the derivation has to be a separate
+// level rather than inlined into combined_raw directly.
 const COMBINED_CTE = Prisma.sql`
-  combined AS (
+  combined_raw AS (
     SELECT
       d.id,
       'orange_book'::text AS source,
@@ -100,10 +126,9 @@ const COMBINED_CTE = Prisma.sql`
       d."drugClass",
       c.id AS "companyId",
       c.name AS "companyName",
-      GREATEST(
-        MAX(p."effectiveExpiryDate") FILTER (WHERE p."delistedAt" IS NULL),
-        MAX(e."expirationDate")
-      ) AS estimated_generic_entry_date,
+      MAX(p."effectiveExpiryDate") FILTER (WHERE p."delistedAt" IS NULL) AS max_patent_date,
+      MAX(p."effectiveExpiryDate") FILTER (WHERE p."delistedAt" IS NULL AND p."expiryAdjustmentDays" IS NOT NULL) AS max_patent_date_confirmed,
+      MAX(e."expirationDate") AS max_exclusivity_date,
       COUNT(DISTINCT p.id) AS patent_count,
       COUNT(DISTINCT e.id) AS exclusivity_count,
       MAX(p."expiryAdjustmentDays") FILTER (WHERE p."delistedAt" IS NULL) AS max_pta_gap_days
@@ -130,10 +155,9 @@ const COMBINED_CTE = Prisma.sql`
       bp."drugClass",
       c.id AS "companyId",
       c.name AS "companyName",
-      GREATEST(
-        MAX(p."effectiveExpiryDate") FILTER (WHERE p."delistedAt" IS NULL),
-        MAX(e."expirationDate")
-      ) AS estimated_generic_entry_date,
+      MAX(p."effectiveExpiryDate") FILTER (WHERE p."delistedAt" IS NULL) AS max_patent_date,
+      MAX(p."effectiveExpiryDate") FILTER (WHERE p."delistedAt" IS NULL AND p."expiryAdjustmentDays" IS NOT NULL) AS max_patent_date_confirmed,
+      MAX(e."expirationDate") AS max_exclusivity_date,
       COUNT(DISTINCT p.id) AS patent_count,
       COUNT(DISTINCT e.id) AS exclusivity_count,
       MAX(p."expiryAdjustmentDays") FILTER (WHERE p."delistedAt" IS NULL) AS max_pta_gap_days
@@ -142,6 +166,27 @@ const COMBINED_CTE = Prisma.sql`
     LEFT JOIN "Patent" p ON p."biologicProductId" = bp.id
     LEFT JOIN "Exclusivity" e ON e."biologicProductId" = bp.id
     GROUP BY bp.id, c.id, c.name
+  ),
+  combined AS (
+    SELECT
+      id, source, name, "alternateName", "applicationType", "licenseType",
+      "dosageForm", route, strength, "approvalDate", modality, "drugClass",
+      "companyId", "companyName",
+      patent_count, exclusivity_count, max_pta_gap_days,
+      GREATEST(max_patent_date, max_exclusivity_date) AS estimated_generic_entry_date,
+      -- confirmed: the winning date is achieved by an exclusivity (always
+      -- FDA-final) or by a patent whose adjustment has actually been
+      -- checked against USPTO records. Otherwise the winning date is
+      -- coming from an unverified patent — still just the source's own
+      -- listed figure, so pending_verification. Null only when there's no
+      -- patent or exclusivity at all.
+      CASE
+        WHEN GREATEST(max_patent_date, max_exclusivity_date) IS NULL THEN NULL
+        WHEN max_exclusivity_date IS NOT NULL AND max_exclusivity_date = GREATEST(max_patent_date, max_exclusivity_date) THEN 'confirmed'
+        WHEN max_patent_date_confirmed IS NOT NULL AND max_patent_date_confirmed = GREATEST(max_patent_date, max_exclusivity_date) THEN 'confirmed'
+        ELSE 'pending_verification'
+      END AS date_confidence
+    FROM combined_raw
   )
 `;
 
@@ -239,6 +284,7 @@ interface CombinedRow {
   companyId: string;
   companyName: string;
   estimatedGenericEntryDate: Date | null;
+  dateConfidence: "confirmed" | "pending_verification" | null;
   patentCount: bigint;
   exclusivityCount: bigint;
   maxPtaGapDays: number | null;
@@ -330,6 +376,7 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
         "dosageForm", route, strength, "approvalDate", modality, "drugClass",
         "companyId", "companyName",
         estimated_generic_entry_date AS "estimatedGenericEntryDate",
+        date_confidence AS "dateConfidence",
         patent_count AS "patentCount",
         exclusivity_count AS "exclusivityCount",
         max_pta_gap_days AS "maxPtaGapDays",
@@ -359,6 +406,7 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
     drugClass: row.drugClass,
     company: { id: row.companyId, name: row.companyName },
     estimatedGenericEntryDate: toDateString(row.estimatedGenericEntryDate),
+    dateConfidence: row.dateConfidence,
     patentCount: Number(row.patentCount),
     exclusivityCount: Number(row.exclusivityCount),
     maxPtaGapDays: row.maxPtaGapDays,

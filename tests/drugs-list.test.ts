@@ -207,6 +207,27 @@ describe("listDrugs (query layer)", () => {
     const result = await listDrugs(parsedQuery({ q: "betamed" }));
     expect(result.data[0]).toMatchObject({ patentCount: 1, exclusivityCount: 1 });
   });
+
+  describe("dateConfidence", () => {
+    it("is pending_verification when an unverified patent controls the estimate", async () => {
+      const result = await listDrugs(parsedQuery({ q: "alphadrug" }));
+      expect(result.data[0].dateConfidence).toBe("pending_verification");
+    });
+
+    it("is confirmed when an exclusivity controls the estimate", async () => {
+      const result = await listDrugs(parsedQuery({ q: "betamed" }));
+      expect(result.data[0].dateConfidence).toBe("confirmed");
+    });
+
+    it("is confirmed once the controlling patent's expiryAdjustmentDays is set", async () => {
+      await prisma.patent.update({
+        where: { id: fx.alphaDrugPatentId },
+        data: { expiryAdjustmentDays: 30 },
+      });
+      const result = await listDrugs(parsedQuery({ q: "alphadrug" }));
+      expect(result.data[0].dateConfidence).toBe("confirmed");
+    });
+  });
 });
 
 describe("GET /api/drugs (route layer)", () => {

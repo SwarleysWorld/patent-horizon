@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { resetDb, seedFixtures, createTestUser, type Fixtures, type TestUser } from "./helpers";
 import { getDrugById } from "@/lib/drugs/queries";
 import { GET } from "@/app/api/drugs/[id]/route";
+import { prisma } from "@/lib/prisma";
 
 let fx: Fixtures;
 let subscriber: TestUser;
@@ -67,6 +68,32 @@ describe("getDrugById (query layer)", () => {
     it("the controlling label is human-readable and includes the patent number", async () => {
       const alpha = await getDrugById(fx.alphaDrugId);
       expect(alpha!.genericEntryEstimate.controllingLabel).toContain("9000001");
+    });
+
+    it("flags pending_verification when the controlling patent has no expiryAdjustmentDays yet", async () => {
+      const alpha = await getDrugById(fx.alphaDrugId);
+      expect(alpha!.patents[0].expiryAdjustmentDays).toBeNull();
+      expect(alpha!.genericEntryEstimate.dateConfidence).toBe("pending_verification");
+      expect(alpha!.genericEntryEstimate.basis).toMatch(/not yet been checked against USPTO/i);
+    });
+
+    it("an exclusivity-controlled estimate is always confirmed — no USPTO adjustment process applies to it", async () => {
+      const beta = await getDrugById(fx.betaMedId);
+      expect(beta!.genericEntryEstimate.dateConfidence).toBe("confirmed");
+    });
+
+    it("a patent-controlled estimate is confirmed once its expiryAdjustmentDays is set", async () => {
+      await prisma.patent.update({
+        where: { id: fx.alphaDrugPatentId },
+        data: { expiryAdjustmentDays: 30 },
+      });
+      const alpha = await getDrugById(fx.alphaDrugId);
+      expect(alpha!.genericEntryEstimate.dateConfidence).toBe("confirmed");
+    });
+
+    it("dateConfidence is null when there's no known barrier", async () => {
+      const epsilon = await getDrugById(fx.epsilonGenId);
+      expect(epsilon!.genericEntryEstimate.dateConfidence).toBeNull();
     });
   });
 

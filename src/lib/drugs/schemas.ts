@@ -143,6 +143,17 @@ export const GenericEntryEstimateSchema = z.object({
   controllingId: z.string().nullable(),
   /** Human-readable label for the controlling item, e.g. "Patent 6967208" or "Exclusivity NCE". */
   controllingLabel: z.string().nullable(),
+  /**
+   * Whether `date` can be trusted as-is. "confirmed": controlled by an FDA
+   * exclusivity (always FDA-final, no separate verification step applies),
+   * or by a patent whose term has been independently checked against USPTO
+   * Patent Term Adjustment records. "pending_verification": controlled by
+   * a patent that hasn't been checked yet — `date` is still just the
+   * source's (Orange/Purple Book's) own listed expiry and could shift once
+   * verified. Null only when there's no controlling item at all (`date` is
+   * also null in that case).
+   */
+  dateConfidence: z.enum(["confirmed", "pending_verification"]).nullable(),
   basis: z.string(),
 });
 
@@ -182,6 +193,8 @@ export const SearchResultSchema = z.object({
   licenseType: z.enum(["STANDARD", "BIOSIMILAR", "INTERCHANGEABLE"]).nullable(),
   ...SharedProductFields,
   estimatedGenericEntryDate: z.iso.date().nullable(),
+  /** Same meaning as `GenericEntryEstimateSchema.dateConfidence` — whether `estimatedGenericEntryDate` is USPTO-verified or still just the source's listed figure. Null when `estimatedGenericEntryDate` is null. */
+  dateConfidence: z.enum(["confirmed", "pending_verification"]).nullable(),
   patentCount: z.number().int(),
   exclusivityCount: z.number().int(),
   /** Largest known USPTO Patent Term Adjustment gap (days) among this result's current patents, or null if none is known yet. See `minPtaGapDays` on the list query. */

@@ -21,7 +21,7 @@ export function GenericEntryCallout({ estimate }: { estimate: GenericEntryEstima
       </div>
       <div className="mt-2">
         {estimate.date ? (
-          <EntryDateCell date={estimate.date} size="lg" />
+          <EntryDateCell date={estimate.date} size="lg" confidence={estimate.dateConfidence} />
         ) : (
           <span className="text-2xl font-semibold text-emerald-700 dark:text-emerald-400">
             No known barrier — open now

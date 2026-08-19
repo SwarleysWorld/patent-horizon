@@ -4,10 +4,21 @@ import { formatDate } from "@/lib/format";
 
 function AdjustmentBadge({ days }: { days: number | null }) {
   if (days === null) {
-    return <span className="text-zinc-400 dark:text-zinc-600" title="Adjustment not yet confirmed">—</span>;
+    return (
+      <span
+        className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400"
+        title="Not yet checked against USPTO Patent Term Adjustment records — the effective expiry shown is the source's own listed figure and could move once verified"
+      >
+        Pending
+      </span>
+    );
   }
   if (days === 0) {
-    return <span className="text-zinc-500 dark:text-zinc-400">0d</span>;
+    return (
+      <span className="text-zinc-500 dark:text-zinc-400" title="USPTO-verified — no adjustment applied">
+        0d
+      </span>
+    );
   }
   const positive = days > 0;
   return (
@@ -55,8 +66,17 @@ export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
     return <p className="px-1 py-6 text-sm text-zinc-500 dark:text-zinc-400">No patents on file for this drug.</p>;
   }
 
+  const hasPending = patents.some((p) => p.expiryAdjustmentDays === null);
+
   return (
     <div className="overflow-x-auto">
+      {hasPending && (
+        <p className="mb-2 px-1 text-xs text-zinc-500 dark:text-zinc-400">
+          <span className="font-medium text-amber-700 dark:text-amber-400">Pending</span> means this patent&apos;s
+          expiry hasn&apos;t been checked against USPTO records yet — the &quot;Effective expiry&quot; shown is still
+          the source&apos;s own listed date and could move once verified.
+        </p>
+      )}
       <table className="w-full min-w-[720px] border-collapse text-sm">
         <thead>
           <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -65,7 +85,9 @@ export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
             <th className="py-2 pr-4 font-medium">Use code</th>
             <th className="py-2 pr-4 font-medium">Nominal expiry</th>
             <th className="py-2 pr-4 font-medium">Effective expiry</th>
-            <th className="py-2 pr-4 text-right font-medium">Adjustment</th>
+            <th className="py-2 pr-4 text-right font-medium" title="How many days USPTO's Patent Term Adjustment shifted this patent's expiry, once checked">
+              PTA Adjustment
+            </th>
           </tr>
         </thead>
         <tbody>

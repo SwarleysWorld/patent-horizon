@@ -414,7 +414,16 @@ export function DrugsExplorer({
       {data.length === 0 ? (
         <EmptyState hasFilters={hasAnyFilter} />
       ) : (
-        <div className={clsx("overflow-x-auto transition-opacity", isPending && "opacity-60")}>
+        <div className={clsx("transition-opacity", isPending && "opacity-60")}>
+          <p className="px-4 pt-3 text-xs text-zinc-500 dark:text-zinc-400">
+            Dates flagged{" "}
+            <span className="rounded bg-amber-50 px-1 py-0.5 font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+              Pending
+            </span>{" "}
+            haven&apos;t been checked against USPTO records yet and may still move — everything else is either an FDA
+            exclusivity date or a USPTO-verified patent expiry.
+          </p>
+        <div className="overflow-x-auto">
           <table className="w-full min-w-[1180px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -485,15 +494,18 @@ export function DrugsExplorer({
                     {row.exclusivityCount}
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    <PtaGapCell days={row.maxPtaGapDays} />
+                    <PtaGapCell days={row.maxPtaGapDays} patentCount={row.patentCount} />
                   </td>
                   <td className="px-4 py-2.5">
-                    {row.estimatedGenericEntryDate && <EntryDateCell date={row.estimatedGenericEntryDate} />}
+                    {row.estimatedGenericEntryDate && (
+                      <EntryDateCell date={row.estimatedGenericEntryDate} confidence={row.dateConfidence} />
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
         </div>
       )}
 
