@@ -7,10 +7,17 @@ const PTA_SOURCE_URL = "https://data.uspto.gov/apis/patent-file-wrapper/patent-t
 const MS_PER_DAY = 86_400_000;
 const STATUTORY_TERM_YEARS = 20;
 
+// UTC-based arithmetic throughout — not `.setDate()`/`.setFullYear()`,
+// which read and write the LOCAL calendar date of a Date object. USPTO's
+// filingDate ("2001-11-01") parses as UTC midnight (bare ISO date strings
+// always do), so mutating it with local-time setters silently shifts the
+// result by a day in any timezone west of UTC — caught live: a patent with
+// 0 days of PTA adjustment computed an effective date one day EARLIER than
+// its own filing date + 20 years, in this server's UTC-6 timezone. Same
+// class of bug as the two already fixed in the Purple Book date parser
+// (see README's "Notes for future sessions").
 function addDays(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
 }
 
 function daysBetween(a: Date, b: Date): number {
@@ -125,8 +132,9 @@ export async function enrichOnePatent(
   let effectiveExpiryDate: Date;
   let basis: string;
   if (standard) {
-    const statutoryNominal = new Date(filingDate);
-    statutoryNominal.setFullYear(statutoryNominal.getFullYear() + STATUTORY_TERM_YEARS);
+    const statutoryNominal = new Date(
+      Date.UTC(filingDate.getUTCFullYear() + STATUTORY_TERM_YEARS, filingDate.getUTCMonth(), filingDate.getUTCDate()),
+    );
     effectiveExpiryDate = addDays(statutoryNominal, ptaDays);
     basis = `filingDate(${result.filingDate}) + ${STATUTORY_TERM_YEARS}y + ${ptaDays}d PTA`;
   } else {
