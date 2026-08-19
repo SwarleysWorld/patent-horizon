@@ -40,6 +40,8 @@ describe("buildOpenApiDocument", () => {
       "patentType",
       "exclusivityCode",
       "minPtaGapDays",
+      "hasGenericChallenge",
+      "hasFirstCommercialMarketingDate",
       "sort",
       "limit",
       "offset",

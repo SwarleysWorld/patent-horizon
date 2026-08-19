@@ -5,6 +5,7 @@ import { TypeBadge } from "@/components/drugs/TypeBadge";
 import { ModalityBadge } from "@/components/drugs/ModalityBadge";
 import { MODALITY_LABELS } from "@/lib/classification/modality";
 import { GenericEntryCallout } from "@/components/drugs/GenericEntryCallout";
+import { GenericChallengeCallout } from "@/components/drugs/GenericChallengeCallout";
 import { PatentsTable } from "@/components/drugs/PatentsTable";
 import { ExclusivitiesTable } from "@/components/drugs/ExclusivitiesTable";
 import { BackLink } from "@/components/drugs/BackLink";
@@ -46,6 +47,8 @@ export default async function DrugDetailPage({ params }: { params: Promise<{ id:
       </div>
 
       <GenericEntryCallout estimate={drug.genericEntryEstimate} />
+
+      <GenericChallengeCallout challenges={drug.genericChallenges} computedEstimateDate={drug.genericEntryEstimate.date} />
 
       <section>
         <h2 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-50">

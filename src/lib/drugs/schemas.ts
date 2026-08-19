@@ -84,6 +84,10 @@ export const ListDrugsQuerySchema = z.object({
    * buried as just another filter.
    */
   minPtaGapDays: z.coerce.number().int().min(0).max(3650).optional(),
+  /** Presence-only filter (`?hasGenericChallenge=true`) — omit for no filter. Requires at least one linked FDA Paragraph IV generic-challenge filing. Orange Book only (see GenericChallengeSchema). */
+  hasGenericChallenge: z.literal("true").optional(),
+  /** Presence-only filter (`?hasFirstCommercialMarketingDate=true`) — omit for no filter. Requires a real Date of First Commercial Marketing on file from a linked generic-challenge filing — i.e. a generic has actually entered the market, independent of whether FDA made a 180-day decision. */
+  hasFirstCommercialMarketingDate: z.literal("true").optional(),
   sort: z.enum(["entry_asc", "entry_desc", "pta_gap_desc"]).default("entry_asc"),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
@@ -199,6 +203,48 @@ export const SearchResultSchema = z.object({
   exclusivityCount: z.number().int(),
   /** Largest known USPTO Patent Term Adjustment gap (days) among this result's current patents, or null if none is known yet. See `minPtaGapDays` on the list query. */
   maxPtaGapDays: z.number().int().nullable(),
+  /** Whether this drug has at least one linked FDA Paragraph IV generic-challenge filing. Orange Book (small-molecule) results only — see `GenericChallengeSchema`. */
+  hasGenericChallenge: z.boolean(),
+});
+
+// ---- Paragraph IV / generic-challenge tracking -------------------------
+//
+// Sourced from FDA's Paragraph IV Patent Certifications List — a signal
+// that a generic company has filed (or resolved) a patent challenge
+// against this drug, tracked entirely separately from patents/
+// exclusivities. See README "Data ingestion: Paragraph IV Certifications"
+// for the full field provenance and FDA's own stated caveat that its
+// regulatory decisions are based on the underlying applications, not this
+// published list.
+export const GenericChallengeDecisionEntrySchema = z.object({
+  status: z.enum(["ELIGIBLE", "DEFERRED", "NON_FORFEITURE", "EXTINGUISHED"]),
+  postingDate: z.iso.date().nullable(),
+  rawStatusText: z.string(),
+});
+
+export const GenericChallengeSchema = z.object({
+  id: z.string(),
+  activeIngredient: z.string(),
+  dosageForm: z.string(),
+  strength: z.string(),
+  rldName: z.string(),
+  rldNdaNumber: z.string().nullable(),
+  submissionDateType: z.enum(["EXACT_DATE", "PRE_MMA", "RECEIVED_PRIOR_TO"]),
+  submissionDate: z.iso.date().nullable(),
+  potentialFirstApplicantAndaCount: z.number().int().nullable(),
+  /** Most-recent-first, matching FDA's own stated ordering — see the Prisma schema doc comment. Empty array means no 180-day decision has been made yet. */
+  decisionHistory: z.array(GenericChallengeDecisionEntrySchema),
+  currentStatus: z.enum(["ELIGIBLE", "DEFERRED", "NON_FORFEITURE", "EXTINGUISHED"]).nullable(),
+  dateOfFirstApplicantApproval: z.iso.date().nullable(),
+  dateOfFirstCommercialMarketing: z.iso.date().nullable(),
+  /**
+   * Reference-only — FDA's own definition of this field excludes
+   * pediatric exclusivity and reflects only patents with a Paragraph IV
+   * certification, not the drug's full protection picture. Never treated
+   * as authoritative or as a substitute for the drug's own computed
+   * `genericEntryEstimate.date`.
+   */
+  expirationOfLastQualifyingPatent: z.iso.date().nullable(),
 });
 
 // ---- Response body: GET /api/drugs/[id] (Orange Book detail) ----------
@@ -214,6 +260,8 @@ export const DrugDetailSchema = z.object({
   patents: z.array(PatentSchema),
   exclusivities: z.array(ExclusivitySchema),
   genericEntryEstimate: GenericEntryEstimateSchema,
+  /** Empty for the overwhelming majority of drugs — see README for real match-rate numbers. Orange Book only; biosimilars use the separate BPCIA patent-dance process already tracked via Purple Book's own patent list. */
+  genericChallenges: z.array(GenericChallengeSchema),
 });
 
 // ---- Response body: GET /api/biologics/[id] (Purple Book detail) ------

@@ -38,7 +38,13 @@ const MULTI_FILTER_KEYS = [
   "patentType",
   "exclusivityCode",
 ] as const;
-const OTHER_ADVANCED_KEYS = ["expiresAfter", "expiresBefore", "minPtaGapDays"] as const;
+const OTHER_ADVANCED_KEYS = [
+  "expiresAfter",
+  "expiresBefore",
+  "minPtaGapDays",
+  "hasGenericChallenge",
+  "hasFirstCommercialMarketingDate",
+] as const;
 
 interface Pagination {
   limit: number;
@@ -92,6 +98,8 @@ export function DrugsExplorer({
   const expiresAfter = searchParams.get("expiresAfter") ?? "";
   const expiresBefore = searchParams.get("expiresBefore") ?? "";
   const minPtaGapDays = searchParams.get("minPtaGapDays") ?? "";
+  const hasGenericChallenge = searchParams.get("hasGenericChallenge") === "true";
+  const hasFirstCommercialMarketingDate = searchParams.get("hasFirstCommercialMarketingDate") === "true";
 
   function navigate(patch: Record<string, string | null>, resetOffset = true) {
     const params = new URLSearchParams(searchParams.toString());
@@ -397,6 +405,32 @@ export function DrugsExplorer({
                   className="w-28 rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none dark:border-emerald-700 dark:bg-zinc-900 dark:text-zinc-100"
                 />
               </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Generic challenge</label>
+                <div className="flex items-center gap-3 pt-1">
+                  <label className="flex items-center gap-1.5 text-xs text-zinc-700 dark:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={hasGenericChallenge}
+                      onChange={(e) => navigate({ hasGenericChallenge: e.target.checked ? "true" : null })}
+                      className="rounded border-zinc-300 dark:border-zinc-700"
+                    />
+                    Has a challenge
+                  </label>
+                  <label
+                    className="flex items-center gap-1.5 text-xs text-zinc-700 dark:text-zinc-300"
+                    title="A generic has actually begun commercial marketing, per FDA's Paragraph IV list — independent of whether a 180-day exclusivity decision has been made"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={hasFirstCommercialMarketingDate}
+                      onChange={(e) => navigate({ hasFirstCommercialMarketingDate: e.target.checked ? "true" : null })}
+                      className="rounded border-zinc-300 dark:border-zinc-700"
+                    />
+                    Generic on market
+                  </label>
+                </div>
+              </div>
 
               {activeAdvancedCount > 0 && (
                 <button
@@ -469,9 +503,19 @@ export function DrugsExplorer({
                   className="cursor-pointer border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
                 >
                   <td className="px-4 py-2.5">
-                    <Link href={detailHref(row)} className="block font-medium text-zinc-900 hover:underline dark:text-zinc-50">
-                      {titleCase(row.name)}
-                    </Link>
+                    <div className="flex items-center gap-1.5">
+                      <Link href={detailHref(row)} className="font-medium text-zinc-900 hover:underline dark:text-zinc-50">
+                        {titleCase(row.name)}
+                      </Link>
+                      {row.hasGenericChallenge && (
+                        <span
+                          className="inline-flex items-center rounded bg-blue-50 px-1 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-500/10 dark:text-blue-400"
+                          title="Has a filed FDA Paragraph IV generic-challenge on record"
+                        >
+                          Challenge
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-zinc-500 dark:text-zinc-400">
                       {titleCase(row.alternateName)} · {row.strength}
                     </div>

@@ -529,6 +529,169 @@ silently dropped — nothing something didn't match ever just disappears.
 | Exclusivities | 636 (36 reference-product, 30 first-interchangeable, 570 orphan) |
 | Reference products resolved | 236 / 236 (100%) |
 
+## Data ingestion: FDA Paragraph IV Certifications List
+
+`npm run ingest:paragraph-iv` loads FDA's Paragraph IV Patent
+Certifications List — a signal the app's own patent/exclusivity math is
+otherwise silent about: whether a generic company has actually filed a
+patent challenge against a drug, and whether that's already resulted in
+real generic entry, possibly *before* the computed expiry date shown
+elsewhere in this product.
+
+### The source — researched directly, not assumed
+
+`fda.gov/drugs/abbreviated-new-drug-application-anda/patent-certifications-and-suitability-petitions`
+blocks non-browser fetches the same way Purple Book's downloads do (a
+plain `curl`/`fetch` 404s; a browser-like `User-Agent` works). The page's
+actual download link is under a "New Paragraph IV Certifications" heading
+— not the "Paragraph IV Certifications List" heading that describes the
+columns — and its URL (currently `/media/166048/download`) changes
+whenever FDA republishes, so this doesn't hardcode it: it scrapes the
+parent page each run for a link whose text matches "Paragraph IV Patent
+Certifications" and downloads whatever URL is there. A separate, much
+smaller HTML table also lives on that page under the same heading (5
+columns, ~9 rows, the very newest submissions not yet folded into the
+PDF) — deliberately **not** ingested, since it's a preview of the same
+data with none of the 180-day-status/marketing-date fields, not a second
+source.
+
+The PDF itself has no exposed table markup. FDA renders every cell with
+an invisible clip-path rectangle (to keep wrapped text from bleeding into
+the next column) at pixel-identical column positions on every page —
+confirmed directly across pages 1, 2, 50, and 96 of a real download. The
+parser (`src/lib/ingestion/paragraphIV/parsePdf.ts`) reads those clip
+rectangles via `pdfjs-dist`'s operator list as the authoritative row/
+column geometry, deriving both the column boundaries and the header/body
+divider from the PDF's own header row at parse time rather than
+hardcoding pixel constants, so a minor future FDA template tweak fails
+loudly (a clear error) instead of silently mis-parsing. This was validated
+against a full real download before being trusted: reconstructed row
+count matched a reference extraction exactly (1,632/1,632), with
+byte-identical cell content on 1,626/1,632 rows (the other 6 differed only
+by a missing inter-word space).
+
+### Edge cases confirmed directly against a real download
+
+- **Non-date submission values**: `Pre-MMA` (241 rows) and `PIV received
+  prior to <date>` (6 rows) are both real, FDA-defined states — parsed
+  into a `submissionDateType` discriminant (`EXACT_DATE` /
+  `PRE_MMA` / `RECEIVED_PRIOR_TO`), never treated as a parse failure or
+  left as an unexplained null. A `Pre-MMA` row's blank downstream columns
+  (ANDA count, 180-day status, dates) are "not applicable by definition"
+  (FDA's own text: per-patent submission dates aren't tracked under the
+  pre-2003 statutory scheme) — not logged as an issue, unlike a genuinely
+  blank column on a row with a real submission date (an open/unresolved
+  challenge, also not an issue — just `null`, the same convention as
+  `Patent.expiryAdjustmentDays`).
+- **Multi-value stacked cells**: the 180-Day Status and Posting Date
+  columns can stack multiple entries (`"Extinguished\nEligible"`),
+  most-recent-first per FDA's own stated ordering — stored as an ordered
+  `decisionHistory` array. Entry count between the two columns doesn't
+  always match 1:1 (5 real rows have a status with no corresponding
+  posting date) — paired positionally, with a missing date left `null`
+  rather than assumed. One row (Vasopressin/Vasostrict) embeds a
+  per-strength qualifier directly in the status text
+  (`"40 u/100 mL -\nExtinguished"`, wrapped across two lines) — the parser
+  coalesces a keyword-less line into the next line before treating it as
+  one entry, so this resolves to one `EXTINGUISHED` entry with the
+  qualifier preserved in `rawStatusText`, not two bogus entries. The same
+  ragged-multi-value problem hits the marketing-date and expiration-date
+  columns in ~10 rows total, with genuinely inconsistent formatting across
+  rows (separator `-` vs `:`, strength before *or* after the date) — the
+  parser only accepts the single-unambiguous-date case and otherwise
+  leaves the field `null`, preserves the raw text in `rawNotes`, and logs
+  a `RowIssue`, rather than guessing which date belongs to which strength.
+- **Multi-strength rows**: one PDF row can legitimately list several
+  strengths under one RLD/NDA (e.g. Nucynta ER's `"50 mg, 100 mg, 150 mg,
+  200 mg, and 250 mg"`) — resolved by linking to every matching `Drug` row
+  under that NDA number rather than guessing down to one (see matching
+  strategy below).
+- **RLD/NDA cell, two more real cases found during development**: the
+  brand name can wrap across up to 9 lines before the trailing number
+  (`"Excedrin\n(migraine)\n20802"`), a few rows prefix the number with a
+  literal `"NDA "` (`"Bijuva\nNDA 210132"`), and **79 rows (4.8%) have no
+  number at all** — just a bare brand name (`"Pepcid"`, `"Tequin"`,
+  `"Gemzar"`), almost entirely old Pre-MMA entries where FDA's own
+  historical record is incomplete. These are logged as unmatched with an
+  explicit reason, never guessed via brand-name fuzzy matching — too weak
+  a signal to trust silently.
+
+### Domain model
+
+`GenericChallenge` is not a `Patent` and not an `Exclusivity` — it's a
+filing/status record about *other parties'* applications against the
+RLD's patents, not a record that itself defines a legal term. Linked to
+`Drug` through a many-to-many join table (`GenericChallengeDrug`), not a
+nullable FK on either side: confirmed directly that one PDF row's strength
+list can resolve to several real `Drug` rows (Nucynta ER → 5 rows across
+`productNumber` 001–005), which a single FK couldn't represent. Decision
+history is stored as an ordered JSON array (matching how
+`IngestionRun.summary` already uses `Json` for a structured-but-not-
+independently-queried shape), with `currentStatus` denormalized out for
+the one thing actually filtered/displayed. Deliberately ANDA/505(j)-only —
+biosimilars use the separate BPCIA patent-dance process, already tracked
+via Purple Book's own patent list, so this never links to
+`BiologicProduct`.
+
+`GenericChallenge`'s natural key uses a `naturalKeyNda` sentinel column
+(`rldNdaNumber ?? "NO_NDA:" + rldName`), not the nullable `rldNdaNumber`
+column directly, in its `@@unique` constraint — Postgres treats every
+`NULL` as distinct, so a compound unique index containing a nullable
+column silently stops deduplicating any row where that column is null.
+Caught before it shipped: the ~5% of rows with no NDA number would have
+re-inserted as a brand-new row on every re-ingestion instead of upserting
+in place. Same sentinel pattern already used for `Patent.useCode`'s
+`@default("")`, for exactly the same reason.
+
+### Product-matching strategy
+
+Primary match: normalize the RLD/NDA cell's trailing number (strip an
+optional `"NDA "` prefix, zero-pad to 6 digits, prepend `"NDA"`) and query
+every `Drug` row sharing that `applicationNumber` — not just one, since a
+challenge can legitimately span several strength rows under one NDA. When
+the matched set spans more than one distinct `dosageForm` (same NDA,
+different dosage forms), it's narrowed by case-insensitive token overlap
+between the PDF's dosage-form text and each `Drug`'s own (the two sides
+use different word order/casing/pluralization — confirmed directly, e.g.
+"Extended-release Tablets" vs `"TABLET, EXTENDED RELEASE"`); if that
+doesn't cleanly resolve, the full unnarrowed set is kept and a `RowIssue`
+is logged rather than guessing. Strength itself is never matched at the
+individual-SKU level — both sides use incompatible free-text formats
+(PDF: `"300 mg"`; Orange Book: `"EQ 300MG BASE **Federal Register
+determination...**"`), and a challenge fundamentally describes the RLD's
+patent estate at the dosage-form grain, not per strength, in FDA's own
+list design.
+
+### Result of the first real run (2026-08-19)
+
+| Metric | Count |
+|---|---|
+| Raw rows parsed from PDF | 1,632 |
+| Challenges upserted | 1,627 (5 deduplicated as literal repeats) |
+| Matched to ≥1 `Drug` | 1,540 (94.6%) |
+| Unmatched — no RLD/NDA number in source | 79 |
+| Unmatched — RLD/NDA number not found in current Orange Book data | 8 |
+| `GenericChallengeDrug` links created | 4,565 |
+| Row-level issues logged | 183 (grouped into 18 categories, see the CLI output for the full breakdown) |
+
+How much of this reflects *real, resolved* generic competition, not just
+a filed challenge: of the 1,540 matched challenges, a real
+`dateOfFirstCommercialMarketing` is on file for a meaningful subset, and
+some of those genuinely predate the drug's own computed expiry estimate —
+exactly the divergence this feature exists to surface (see the "Generic
+entry occurred before the computed expiry date" flag on a drug's detail
+page). Run `npm run ingest:paragraph-iv` yourself and check `/data` or the
+CLI summary for current numbers; they shift with every FDA republish.
+
+**FDA's own caveat, stated directly on the source page**: the agency's
+regulatory decisions are based on the underlying applications, not this
+published list — the list can lag or occasionally diverge from ground
+truth. This app inherits that caveat as-is; `expirationOfLastQualifyingPatent`
+in particular is shown as reference-only on a drug's detail page, never as
+a replacement for the drug's own computed `effectiveExpiryDate` (FDA's own
+definition of that column excludes pediatric exclusivity and reflects only
+PIV-certified patents, not the drug's full protection picture).
+
 ## Patent Term Adjustment enrichment
 
 `npm run enrich:pta` corrects the single most common source of a wrong
@@ -763,6 +926,14 @@ product's core value-add made explicit and auditable, not a black box:
 `404` (structured, see below) if the id doesn't exist. A biologic id (from
 a `/api/drugs` result with `source: "purple_book"`) 404s here — use
 `GET /api/biologics/:id` instead.
+
+`genericChallenges` (usually empty — see the Paragraph IV section above
+for real match-rate numbers) carries any linked FDA Paragraph IV filing:
+current 180-day status, decision history, and — critically —
+`dateOfFirstCommercialMarketing` shown as its own field, never merged into
+`genericEntryEstimate`. The web UI flags it distinctly when that date
+predates the computed estimate ("generic entry occurred before the
+computed expiry date").
 
 ### `GET /api/biologics/:id` — full detail on one Purple Book biologic
 
@@ -1056,6 +1227,13 @@ against `Patent`/`Exclusivity`, not plain column filters, since they
 depend on a result's *children*, not its own row. `expiresAfter` /
 `expiresBefore` (an explicit date range) and `withinDays` (the UI's quick
 horizon chips) both filter the same underlying estimate and can combine.
+
+`hasGenericChallenge` and `hasFirstCommercialMarketingDate` are
+presence-only toggles (`?hasGenericChallenge=true`, omit for no filter),
+not comma-separated lists — each is a plain "does at least one exist"
+question, not a multi-value category. Both are Orange Book only (see "Data
+ingestion: FDA Paragraph IV Certifications List") — Purple Book results
+never match either.
 
 ### The PTA gap filter — made prominent, not buried
 
@@ -1389,9 +1567,11 @@ src/lib/openapi/           Builds the OpenAPI doc from the Zod schemas above
 src/lib/ingestion/shared.ts     mapWithConcurrency/dedupeByKey — shared by both pipelines below
 src/lib/ingestion/orangeBook/   Orange Book (small-molecule) ingestion pipeline
 src/lib/ingestion/purpleBook/   Purple Book (biologics) ingestion pipeline — product CSV + patent-list HTML
+src/lib/ingestion/paragraphIV/  Paragraph IV generic-challenge ingestion — PDF scrape/parse/load
 src/lib/ingestion/pta/     USPTO Patent Term Adjustment enrichment (client/enrich/orchestrate) — both sources
 scripts/ingest-orange-book.ts   CLI entrypoint: npm run ingest:orange-book
 scripts/ingest-purple-book.ts   CLI entrypoint: npm run ingest:purple-book
+scripts/ingest-paragraph-iv.ts  CLI entrypoint: npm run ingest:paragraph-iv
 scripts/enrich-pta.ts      CLI entrypoint: npm run enrich:pta
 scripts/classify-drugs.ts  CLI entrypoint: npm run classify:drugs (both sources)
 tests/                     Vitest suite — runs against a real, separate test database
@@ -1476,7 +1656,7 @@ The day-to-day loop for whoever owns this product — no code changes needed for
    ```
    Open [http://localhost:3000](http://localhost:3000). (For a production deploy, see [Deploying](#deploying) below — the loop is the same either way, just run these commands against whichever database `DATABASE_URL` points at.)
 
-2. **Refresh the data.** One command re-downloads both FDA sources and reclassifies everything — takes a minute or two:
+2. **Refresh the data.** One command re-downloads all three FDA sources and reclassifies everything — takes a minute or two:
    ```bash
    npm run refresh:data
    ```
@@ -1506,7 +1686,9 @@ npm run ingest:orange-book -- --file ./orangebook.zip   # load from a local zip 
 npm run ingest:purple-book            # download + load the current FDA Purple Book (product CSV + patent-list HTML)
 npm run ingest:purple-book -- --url <csv-url>          # load from an explicit monthly file instead
 npm run ingest:purple-book -- --skip-patent-list       # product data only, skip the HTML scrape
-npm run refresh:data                  # both ingests + classification, in order, in one command
+npm run ingest:paragraph-iv           # scrape FDA's page + load the current Paragraph IV Certifications List PDF
+npm run ingest:paragraph-iv -- --url <pdf-url>         # load from an explicit PDF URL instead
+npm run refresh:data                  # all three ingests + classification, in order, in one command
 npm run enrich:pta                    # enrich all unenriched patents with USPTO PTA data (both sources)
 npm run enrich:pta -- --limit 20      # sample run: next 20 patents only
 npm run classify:drugs                # backfill modality/drugClass for existing drugs + biologics

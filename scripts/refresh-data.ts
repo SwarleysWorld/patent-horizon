@@ -14,6 +14,7 @@ interface Step {
 const STEPS: Step[] = [
   { label: "FDA Orange Book (small-molecule drugs)", npmScript: "ingest:orange-book" },
   { label: "FDA Purple Book (biologics)", npmScript: "ingest:purple-book" },
+  { label: "FDA Paragraph IV Certifications List (generic challenges)", npmScript: "ingest:paragraph-iv" },
   { label: "Classification backfill (modality / drug class)", npmScript: "classify:drugs" },
 ];
 

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { ORANGE_BOOK_SOURCE_NAME } from "./orangeBook";
 import { PURPLE_BOOK_SOURCE_NAME } from "./purpleBook";
+import { PARAGRAPH_IV_SOURCE_NAME } from "./paragraphIV";
 import { PTA_SOURCE_NAME } from "./pta/enrich";
 
 // Powers the /data operator page — a single place to answer "is the data
@@ -121,11 +122,12 @@ export interface IngestionStatus {
 }
 
 export async function getIngestionStatus(): Promise<IngestionStatus> {
-  const [orangeBook, purpleBook, pta, enrichment] = await Promise.all([
+  const [orangeBook, purpleBook, paragraphIV, pta, enrichment] = await Promise.all([
     getSourceStatus(ORANGE_BOOK_SOURCE_NAME),
     getSourceStatus(PURPLE_BOOK_SOURCE_NAME),
+    getSourceStatus(PARAGRAPH_IV_SOURCE_NAME),
     getSourceStatus(PTA_SOURCE_NAME),
     getEnrichmentProgress(),
   ]);
-  return { sources: [orangeBook, purpleBook, pta], enrichment };
+  return { sources: [orangeBook, purpleBook, paragraphIV, pta], enrichment };
 }

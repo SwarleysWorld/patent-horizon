@@ -131,7 +131,13 @@ const COMBINED_CTE = Prisma.sql`
       MAX(e."expirationDate") AS max_exclusivity_date,
       COUNT(DISTINCT p.id) AS patent_count,
       COUNT(DISTINCT e.id) AS exclusivity_count,
-      MAX(p."expiryAdjustmentDays") FILTER (WHERE p."delistedAt" IS NULL) AS max_pta_gap_days
+      MAX(p."expiryAdjustmentDays") FILTER (WHERE p."delistedAt" IS NULL) AS max_pta_gap_days,
+      -- Correlated EXISTS rather than a third LEFT JOIN fanned out
+      -- alongside Patent/Exclusivity — a boolean presence check doesn't
+      -- need join-and-aggregate, and this avoids adding yet another
+      -- multiplying join to the cross product the existing COUNT(DISTINCT)
+      -- calls already have to account for.
+      EXISTS (SELECT 1 FROM "GenericChallengeDrug" gcd WHERE gcd."drugId" = d.id) AS has_generic_challenge
     FROM "Drug" d
     JOIN "Company" c ON c.id = d."companyId"
     LEFT JOIN "Patent" p ON p."drugId" = d.id
@@ -160,7 +166,11 @@ const COMBINED_CTE = Prisma.sql`
       MAX(e."expirationDate") AS max_exclusivity_date,
       COUNT(DISTINCT p.id) AS patent_count,
       COUNT(DISTINCT e.id) AS exclusivity_count,
-      MAX(p."expiryAdjustmentDays") FILTER (WHERE p."delistedAt" IS NULL) AS max_pta_gap_days
+      MAX(p."expiryAdjustmentDays") FILTER (WHERE p."delistedAt" IS NULL) AS max_pta_gap_days,
+      -- Paragraph IV / GenericChallenge is deliberately Drug-only — see
+      -- README. Biosimilars use the separate BPCIA patent-dance process,
+      -- already tracked via Purple Book's own patent list.
+      FALSE AS has_generic_challenge
     FROM "BiologicProduct" bp
     JOIN "Company" c ON c.id = bp."companyId"
     LEFT JOIN "Patent" p ON p."biologicProductId" = bp.id
@@ -172,7 +182,7 @@ const COMBINED_CTE = Prisma.sql`
       id, source, name, "alternateName", "applicationType", "licenseType",
       "dosageForm", route, strength, "approvalDate", modality, "drugClass",
       "companyId", "companyName",
-      patent_count, exclusivity_count, max_pta_gap_days,
+      patent_count, exclusivity_count, max_pta_gap_days, has_generic_challenge,
       GREATEST(max_patent_date, max_exclusivity_date) AS estimated_generic_entry_date,
       -- confirmed: the winning date is achieved by an exclusivity (always
       -- FDA-final) or by a patent whose adjustment has actually been
@@ -205,6 +215,8 @@ interface FilterConditionInputs {
   patentTypeValues: string[] | null;
   exclusivityCodeValues: string[] | null;
   minPtaGapDays: number | null;
+  hasGenericChallenge: boolean;
+  hasFirstCommercialMarketingDate: boolean;
 }
 
 // EXISTS against Patent/Exclusivity, correlated by either parent FK — cuid
@@ -236,6 +248,16 @@ function exclusivityCodeCondition(values: string[] | null): Prisma.Sql {
   )`;
 }
 
+// Naturally scoped to Orange Book rows only — GenericChallengeDrug only
+// ever references Drug, so this EXISTS never matches a Purple Book id.
+function hasFirstCommercialMarketingDateCondition(): Prisma.Sql {
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM "GenericChallengeDrug" gcd
+    JOIN "GenericChallenge" gc ON gc.id = gcd."genericChallengeId"
+    WHERE gcd."drugId" = combined.id AND gc."dateOfFirstCommercialMarketing" IS NOT NULL
+  )`;
+}
+
 function buildConditions(input: FilterConditionInputs): Record<string, Prisma.Sql> {
   return {
     q: input.searchPattern
@@ -258,6 +280,8 @@ function buildConditions(input: FilterConditionInputs): Record<string, Prisma.Sq
     patentType: patentTypeCondition(input.patentTypeValues),
     exclusivityCode: exclusivityCodeCondition(input.exclusivityCodeValues),
     minPtaGapDays: input.minPtaGapDays != null ? Prisma.sql`max_pta_gap_days >= ${input.minPtaGapDays}` : Prisma.sql`TRUE`,
+    hasGenericChallenge: input.hasGenericChallenge ? Prisma.sql`has_generic_challenge` : Prisma.sql`TRUE`,
+    hasFirstCommercialMarketingDate: input.hasFirstCommercialMarketingDate ? hasFirstCommercialMarketingDateCondition() : Prisma.sql`TRUE`,
   };
 }
 
@@ -288,6 +312,7 @@ interface CombinedRow {
   patentCount: bigint;
   exclusivityCount: bigint;
   maxPtaGapDays: number | null;
+  hasGenericChallenge: boolean;
   totalCount: bigint;
 }
 
@@ -317,6 +342,8 @@ function buildFilterInputs(query: ListDrugsQuery): FilterConditionInputs {
     patentTypeValues: query.patentType ?? null,
     exclusivityCodeValues: query.exclusivityCode ?? null,
     minPtaGapDays: query.minPtaGapDays ?? null,
+    hasGenericChallenge: query.hasGenericChallenge === "true",
+    hasFirstCommercialMarketingDate: query.hasFirstCommercialMarketingDate === "true",
   };
 }
 
@@ -380,6 +407,7 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
         patent_count AS "patentCount",
         exclusivity_count AS "exclusivityCount",
         max_pta_gap_days AS "maxPtaGapDays",
+        has_generic_challenge AS "hasGenericChallenge",
         count(*) OVER() AS "totalCount"
       FROM combined
       WHERE ${where}
@@ -410,6 +438,7 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
     patentCount: Number(row.patentCount),
     exclusivityCount: Number(row.exclusivityCount),
     maxPtaGapDays: row.maxPtaGapDays,
+    hasGenericChallenge: row.hasGenericChallenge,
   }));
 
   return {
@@ -473,6 +502,7 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
       company: true,
       patents: { orderBy: { effectiveExpiryDate: "asc" } },
       exclusivities: { orderBy: { expirationDate: "asc" } },
+      challengeLinks: { include: { genericChallenge: true }, orderBy: { genericChallenge: { submissionDate: "desc" } } },
     },
   });
 
@@ -513,6 +543,22 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
       expirationDate: toDateString(e.expirationDate),
     })),
     genericEntryEstimate: computeGenericEntryEstimate(drug.patents, drug.exclusivities),
+    genericChallenges: drug.challengeLinks.map(({ genericChallenge: gc }) => ({
+      id: gc.id,
+      activeIngredient: gc.activeIngredient,
+      dosageForm: gc.dosageForm,
+      strength: gc.strength,
+      rldName: gc.rldName,
+      rldNdaNumber: gc.rldNdaNumber,
+      submissionDateType: gc.submissionDateType,
+      submissionDate: toDateString(gc.submissionDate),
+      potentialFirstApplicantAndaCount: gc.potentialFirstApplicantAndaCount,
+      decisionHistory: gc.decisionHistory as unknown as DrugDetail["genericChallenges"][number]["decisionHistory"],
+      currentStatus: gc.currentStatus,
+      dateOfFirstApplicantApproval: toDateString(gc.dateOfFirstApplicantApproval),
+      dateOfFirstCommercialMarketing: toDateString(gc.dateOfFirstCommercialMarketing),
+      expirationOfLastQualifyingPatent: toDateString(gc.expirationOfLastQualifyingPatent),
+    })),
   };
 }
 

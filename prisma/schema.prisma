@@ -120,6 +120,7 @@ model Drug {
   patents          Patent[]
   exclusivities    Exclusivity[]
   ingestionRecords IngestionRecord[]
+  challengeLinks   GenericChallengeDrug[]
 
   @@unique([applicationNumber, productNumber])
   @@index([brandName])
@@ -165,10 +166,10 @@ model BiologicProduct {
   // case where resolution fails or doesn't apply; referenceProductNameRaw
   // preserves the source's raw name in the unresolved case so that
   // information is never silently dropped.
-  referenceProductId      String?
-  referenceProduct        BiologicProduct?  @relation("ReferenceProduct", fields: [referenceProductId], references: [id])
+  referenceProductId             String?
+  referenceProduct               BiologicProduct?  @relation("ReferenceProduct", fields: [referenceProductId], references: [id])
   biosimilarsAndInterchangeables BiologicProduct[] @relation("ReferenceProduct")
-  referenceProductNameRaw String?
+  referenceProductNameRaw        String?
 
   // Same best-effort classification approach as Drug — see
   // src/lib/classification/. Defaults to UNCLASSIFIED, not SMALL_MOLECULE:
@@ -217,7 +218,7 @@ model BiologicProduct {
 //
 // See README.md "Data model" section for the full rationale.
 model Patent {
-  id     String @id @default(cuid())
+  id     String  @id @default(cuid())
   drugId String?
   drug   Drug?   @relation(fields: [drugId], references: [id], onDelete: Cascade)
 
@@ -291,7 +292,7 @@ model Patent {
 // Shared between Drug and BiologicProduct — same drugId/biologicProductId
 // polymorphism and the same partial-unique-index caveat as Patent above.
 model Exclusivity {
-  id     String @id @default(cuid())
+  id     String  @id @default(cuid())
   drugId String?
   drug   Drug?   @relation(fields: [drugId], references: [id], onDelete: Cascade)
 
@@ -319,6 +320,146 @@ model Exclusivity {
   @@unique([drugId, code, expirationDate])
   @@unique([biologicProductId, code, expirationDate])
   @@index([expirationDate])
+}
+
+// How FDA's Date of First PIV Submission column encodes itself — see
+// GenericChallenge.submissionDateType doc comment. Confirmed directly
+// against a real download of FDA's Paragraph IV Certifications List PDF.
+enum PivSubmissionDateType {
+  EXACT_DATE
+  PRE_MMA
+  RECEIVED_PRIOR_TO
+}
+
+// FDA's own four terms for the 180-Day Decision Status column — kept as an
+// enum (unlike Exclusivity.code) because this is a small, FDA-defined,
+// stable vocabulary described explicitly on FDA's own page, not an
+// open-ended one.
+enum PivDecisionStatus {
+  ELIGIBLE
+  DEFERRED
+  NON_FORFEITURE
+  EXTINGUISHED
+}
+
+// One row from FDA's Paragraph IV Patent Certifications List — a signal
+// that a generic company has filed (or resolved) a patent challenge
+// against this RLD, tracked entirely separately from Patent/Exclusivity:
+// it's not a patent (it doesn't itself define a legal term) and it's not
+// an FDA exclusivity (it's a filing/status record about OTHER parties'
+// applications against the RLD's patents). See README "Data ingestion:
+// Paragraph IV Certifications" for the full field-by-field provenance and
+// FDA's own stated caveat that its regulatory decisions are based on the
+// underlying applications, not this published list.
+//
+// Deliberately ANDA/505(j)-only — biosimilars use the BPCIA patent-dance
+// process instead, already tracked via Purple Book's own patent list, so
+// this model links only to Drug, never BiologicProduct.
+model GenericChallenge {
+  id String @id @default(cuid())
+
+  activeIngredient String // "Drug Name" column, as-is from the source
+  dosageForm       String
+  strength         String // raw strength cell — may list multiple strengths for one row, see rawStrengthText
+
+  rldName         String // brand name of the reference listed drug
+  rldNdaNumber    String? // normalized "NDA" + 6-digit number; null when the source row has no number at all (see README — ~5% of rows, mostly old Pre-MMA entries)
+  rldNdaNumberRaw String? // the source's own last-line text when present but not a clean all-digits match (e.g. malformed), kept for debugging rather than silently discarded
+
+  // NOT NULL sentinel for the natural key below — `rldNdaNumber ??
+  // "NO_NDA:" + rldName`, computed at load time. rldNdaNumber itself can't
+  // be the unique column: Postgres treats every NULL as distinct, so a
+  // compound unique index containing a nullable column silently stops
+  // deduplicating any row where that column is null — the ~5% of rows
+  // with no NDA number would re-insert as a brand-new row on every re-run
+  // instead of upserting in place. Same sentinel pattern already used for
+  // Patent.useCode's `@default("")` for exactly this reason.
+  naturalKeyNda String
+
+  submissionDateType PivSubmissionDateType
+  // Set for EXACT_DATE and RECEIVED_PRIOR_TO; null for PRE_MMA (FDA's own
+  // text: individual per-patent dates aren't tracked under the pre-2003
+  // statutory scheme, so there's genuinely no date to store, not a parse
+  // failure). submissionDateType is what a consumer branches on — a
+  // RECEIVED_PRIOR_TO row's date is a real, meaningful upper bound, not
+  // interchangeable with an EXACT_DATE row's date, even though both live
+  // in this same column.
+  submissionDate     DateTime?
+
+  potentialFirstApplicantAndaCount Int?
+
+  // History of 180-Day Decision Status determinations, most-recent-first
+  // — matches FDA's own stated ordering for both the Status and Posting
+  // Date columns. Kept as JSON rather than a child table: a small,
+  // source-owned, order-significant array that's never queried by its own
+  // fields independently of the parent row (same rationale as
+  // IngestionRun.summary's use of Json above). Shape:
+  // [{ status: PivDecisionStatus, postingDate: string | null, rawStatusText: string }]
+  // postingDate is null when the source lists a status with no
+  // corresponding posting-date entry (confirmed real — a handful of rows
+  // do this); rawStatusText preserves the source's own text for that
+  // entry (e.g. a per-strength-qualified status like "40 u/100 mL -
+  // Extinguished") since PivDecisionStatus alone can't capture that.
+  decisionHistory Json
+  // Denormalized decisionHistory[0].status (or null if decisionHistory is
+  // empty) — the one thing actually filtered/displayed without needing to
+  // unpack the JSON, mirroring why SearchResultSchema gets its own
+  // hasGenericChallenge flag rather than making callers inspect a list.
+  currentStatus   PivDecisionStatus?
+
+  dateOfFirstApplicantApproval   DateTime?
+  dateOfFirstCommercialMarketing DateTime?
+  // Multi-value marketing-date cells (rare — different dates for
+  // different strengths within one row) store the single value here only
+  // when the source's own formatting is unambiguous to parse; otherwise
+  // this stays null and the raw text lives in rawNotes with a logged
+  // RowIssue, rather than guessing which date applies.
+
+  // Reference-only — see README and the product-layer doc comment on
+  // GenericChallengeCallout for why this is never conflated with
+  // Patent.effectiveExpiryDate. FDA's own definition of this column
+  // explicitly excludes pediatric exclusivity and reflects only
+  // PIV-certified patents, not the drug's full protection picture.
+  expirationOfLastQualifyingPatent DateTime?
+
+  rawStrengthText String // full source strength cell verbatim, for the multi-strength case
+  rawNotes        String? // any unparsed/ambiguous fragment from this row, preserved verbatim rather than dropped
+
+  drugLinks        GenericChallengeDrug[]
+  ingestionRecords IngestionRecord[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Natural key for idempotent re-ingestion: the source PDF has no row ID
+  // of its own, so this composite is the closest stable identifier built
+  // from the source's own columns — same approach as Purple Book's
+  // exclusivity natural key when no source ID existed. Uses naturalKeyNda
+  // (NOT NULL sentinel), not the nullable rldNdaNumber directly — see its
+  // doc comment above.
+  @@unique([naturalKeyNda, activeIngredient, dosageForm, strength])
+  @@index([rldNdaNumber])
+  @@index([currentStatus])
+  @@index([dateOfFirstCommercialMarketing])
+}
+
+// Many-to-many join between GenericChallenge and Drug — not a nullable FK
+// on either side. Confirmed directly against real data that one PDF row's
+// strength list can resolve to multiple existing Drug rows (e.g. one
+// Nucynta ER challenge row spans 5 separate strength/productNumber rows
+// under the same NDA) — a single nullable FK on either model couldn't
+// represent that. See README's product-matching section.
+model GenericChallengeDrug {
+  id                 String           @id @default(cuid())
+  genericChallengeId String
+  genericChallenge   GenericChallenge @relation(fields: [genericChallengeId], references: [id], onDelete: Cascade)
+  drugId             String
+  drug               Drug             @relation(fields: [drugId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([genericChallengeId, drugId])
+  @@index([drugId])
 }
 
 // An external system or process that supplies data: e.g. "FDA Orange Book",
@@ -372,12 +513,13 @@ model IngestionRun {
 // "lastVerifiedAt" column) so disagreeing sources and value changes over
 // time stay auditable.
 //
-// Exactly one of drugId / patentId / exclusivityId / biologicProductId must
-// be set — enforced by a CHECK constraint added by hand in the migration
-// SQL (Prisma's schema language has no first-class check-constraint support
-// yet). If you ever regenerate this migration from scratch, re-add that
-// constraint (now 4-way: originally just drug/patent/exclusivity, extended
-// when BiologicProduct was added).
+// Exactly one of drugId / patentId / exclusivityId / biologicProductId /
+// genericChallengeId must be set — enforced by a CHECK constraint added by
+// hand in the migration SQL (Prisma's schema language has no first-class
+// check-constraint support yet). If you ever regenerate this migration
+// from scratch, re-add that constraint (now 5-way: originally just
+// drug/patent/exclusivity, extended for BiologicProduct, extended again
+// for GenericChallenge).
 model IngestionRecord {
   id String @id @default(cuid())
 
@@ -396,6 +538,9 @@ model IngestionRecord {
   biologicProductId String?
   biologicProduct   BiologicProduct? @relation(fields: [biologicProductId], references: [id], onDelete: Cascade)
 
+  genericChallengeId String?
+  genericChallenge   GenericChallenge? @relation(fields: [genericChallengeId], references: [id], onDelete: Cascade)
+
   externalRef String? // the source's own id/url for this record, for traceability + dedupe
   verifiedAt  DateTime @default(now())
   changeNote  String? // optional human-readable note of what changed, if anything
@@ -407,6 +552,7 @@ model IngestionRecord {
   @@index([patentId, verifiedAt])
   @@index([exclusivityId, verifiedAt])
   @@index([biologicProductId, verifiedAt])
+  @@index([genericChallengeId, verifiedAt])
   @@index([sourceId, verifiedAt])
 }
 

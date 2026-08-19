@@ -28,6 +28,7 @@ const CSV_COLUMNS = [
   "patentCount",
   "exclusivityCount",
   "maxPtaGapDays",
+  "hasGenericChallenge",
 ] as const;
 
 function csvEscape(value: string): string {
@@ -75,6 +76,7 @@ export async function GET(request: NextRequest) {
         String(row.patentCount),
         String(row.exclusivityCount),
         row.maxPtaGapDays != null ? String(row.maxPtaGapDays) : "",
+        row.hasGenericChallenge ? "Yes" : "No",
       ];
       lines.push(values.map((v) => csvEscape(v)).join(","));
     }
