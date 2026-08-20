@@ -1,26 +1,101 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: `dark:` utilities apply when `.dark` is present
+   on `<html>` (or an ancestor), not directly off `prefers-color-scheme`.
+   The `.dark` class itself is driven by ThemeToggle + the bootstrap
+   script in layout.tsx — OS preference is still the default on a first
+   visit with no saved choice, it's just resolved once into an explicit
+   class rather than tracked live via a media query, so a manual
+   light/dark choice in the sidebar actually has something to override. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Regulatory-ledger palette — see README/design plan for the full
+   rationale. Paper/Ink are the base page tokens; the four accent scales
+   (ledger/rust/statute/flag) each have their "named" color at the 700
+   step, with lighter/darker steps derived for tints, dark-mode text, and
+   badge backgrounds — same structural role Tailwind's built-in scales
+   played before this redesign, just re-hued away from generic gray/
+   emerald/amber/red/blue. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f5f6f4;
+  --foreground: #1c1e22;
+}
+
+.dark {
+  --background: #14171c;
+  --foreground: #e4e6e9;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-plex-sans);
+  --font-serif: var(--font-plex-serif);
+  --font-mono: var(--font-plex-mono);
+
+  /* Paper — neutral scale, same lightness steps as Tailwind's default
+     zinc (50-300 for light-mode surfaces/borders, 700-950 for dark-mode
+     surfaces/borders), re-hued toward a cool paper/ink undertone. */
+  --color-paper-50: #f5f6f2;
+  --color-paper-100: #edeee9;
+  --color-paper-200: #dee1d9;
+  --color-paper-300: #cbcfc3;
+  --color-paper-400: #9ca394;
+  --color-paper-500: #6e7568;
+  --color-paper-600: #52564c;
+  --color-paper-700: #40423b;
+  --color-paper-800: #292b26;
+  --color-paper-900: #1b1d19;
+  --color-paper-950: #101210;
+
+  /* Ledger — primary accent (deep navy). 700 = "Ledger Navy" (#1F3A5F). */
+  --color-ledger-50: #e7ecf1;
+  --color-ledger-400: #4e749e;
+  --color-ledger-500: #2e5580;
+  --color-ledger-600: #24476d;
+  --color-ledger-700: #1f3a5f;
+
+  /* Rust — urgency/imminent/error accent. 700 = "Docket Rust" (#8C3A2B). */
+  --color-rust-50: #f5e9e6;
+  --color-rust-400: #c97d68;
+  --color-rust-500: #a85443;
+  --color-rust-600: #9a4736;
+  --color-rust-700: #8c3a2b;
+
+  /* Statute — confirmed/verified/positive accent. 700 = "Statute Green" (#2F5233). */
+  --color-statute-50: #eaf1ea;
+  --color-statute-400: #6fa377;
+  --color-statute-500: #4c8156;
+  --color-statute-600: #3a6942;
+  --color-statute-700: #2f5233;
+
+  /* Flag — pending/attention accent. 700 = "Amber Flag" (#8A6D1D). */
+  --color-flag-50: #f3eeda;
+  --color-flag-400: #c7a23f;
+  --color-flag-500: #a8862a;
+  --color-flag-600: #977921;
+  --color-flag-700: #8a6d1d;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+}
+
+/* Visible keyboard focus everywhere, in the primary accent — replaces
+   the invisible/default browser outline rather than removing it. */
+:focus-visible {
+  outline: 2px solid var(--color-ledger-500);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

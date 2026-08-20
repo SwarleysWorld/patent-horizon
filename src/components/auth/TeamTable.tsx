@@ -16,8 +16,8 @@ function RoleBadge({ role }: { role: "admin" | "user" }) {
     <span
       className={
         role === "admin"
-          ? "rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-600/20 ring-inset dark:bg-blue-500/10 dark:text-blue-400 dark:ring-blue-500/20"
-          : "rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] font-medium text-zinc-600 ring-1 ring-zinc-500/20 ring-inset dark:bg-zinc-500/10 dark:text-zinc-400 dark:ring-zinc-500/20"
+          ? "rounded bg-ledger-50 px-1.5 py-0.5 text-[11px] font-medium text-ledger-700 ring-1 ring-ledger-600/20 ring-inset dark:bg-ledger-500/10 dark:text-ledger-400 dark:ring-ledger-500/20"
+          : "rounded bg-paper-100 px-1.5 py-0.5 text-[11px] font-medium text-paper-600 ring-1 ring-paper-500/20 ring-inset dark:bg-paper-500/10 dark:text-paper-400 dark:ring-paper-500/20"
       }
     >
       {role === "admin" ? "Analyst" : "Subscriber"}
@@ -33,14 +33,14 @@ function PasswordResetControl({ userId }: { userId: string }) {
   const [isPending, startTransition] = useTransition();
 
   if (done) {
-    return <span className="text-xs text-emerald-600 dark:text-emerald-400">Password set</span>;
+    return <span className="text-xs text-statute-600 dark:text-statute-400">Password set</span>;
   }
 
   if (!open) {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="text-xs text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+        className="text-xs text-paper-500 hover:text-paper-900 dark:text-paper-400 dark:hover:text-paper-100"
       >
         Reset password
       </button>
@@ -67,23 +67,23 @@ function PasswordResetControl({ userId }: { userId: string }) {
         placeholder="New password"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="w-32 rounded border border-zinc-300 px-1.5 py-0.5 text-xs text-zinc-900 focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+        className="w-32 rounded border border-paper-300 px-1.5 py-0.5 text-xs text-paper-900 focus:border-paper-500 focus:outline-none dark:border-paper-700 dark:bg-paper-900 dark:text-paper-100"
       />
       <button
         type="submit"
         disabled={isPending}
-        className="text-xs font-medium text-zinc-900 hover:underline disabled:opacity-50 dark:text-zinc-100"
+        className="text-xs font-medium text-paper-900 hover:underline disabled:opacity-50 dark:text-paper-100"
       >
         Set
       </button>
       <button
         type="button"
         onClick={() => setOpen(false)}
-        className="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+        className="text-xs text-paper-400 hover:text-paper-700 dark:hover:text-paper-200"
       >
         Cancel
       </button>
-      {error && <span className="text-xs text-red-600 dark:text-red-400">{error}</span>}
+      {error && <span className="text-xs text-rust-600 dark:text-rust-400">{error}</span>}
     </form>
   );
 }
@@ -114,7 +114,7 @@ export function TeamTable({ users, currentUserId }: { users: TeamUser[]; current
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] border-collapse text-sm">
         <thead>
-          <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+          <tr className="border-b border-paper-200 text-left text-xs text-paper-500 dark:border-paper-800 dark:text-paper-400">
             <th className="py-2 pr-4 font-medium">Name</th>
             <th className="py-2 pr-4 font-medium">Email</th>
             <th className="py-2 pr-4 font-medium">Role</th>
@@ -124,22 +124,22 @@ export function TeamTable({ users, currentUserId }: { users: TeamUser[]; current
         </thead>
         <tbody>
           {users.map((user) => (
-            <tr key={user.id} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
-              <td className="py-2.5 pr-4 text-zinc-900 dark:text-zinc-50">
+            <tr key={user.id} className="border-b border-paper-100 last:border-0 dark:border-paper-900">
+              <td className="py-2.5 pr-4 text-paper-900 dark:text-paper-50">
                 {user.name}
-                {user.id === currentUserId && <span className="ml-1.5 text-xs text-zinc-400">(you)</span>}
+                {user.id === currentUserId && <span className="ml-1.5 text-xs text-paper-400">(you)</span>}
               </td>
-              <td className="py-2.5 pr-4 text-zinc-600 dark:text-zinc-400">{user.email}</td>
+              <td className="py-2.5 pr-4 text-paper-600 dark:text-paper-400">{user.email}</td>
               <td className="py-2.5 pr-4">
                 <RoleBadge role={user.role} />
               </td>
-              <td className="py-2.5 pr-4 text-zinc-500 dark:text-zinc-400">{user.createdAt}</td>
+              <td className="py-2.5 pr-4 text-paper-500 dark:text-paper-400">{user.createdAt}</td>
               <td className="py-2.5 pr-4">
                 <div className="flex flex-wrap items-center gap-3">
                   <button
                     onClick={() => toggleRole(user)}
                     disabled={isPending || (user.id === currentUserId && user.role === "admin")}
-                    className="text-xs text-zinc-500 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-40 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    className="text-xs text-paper-500 hover:text-paper-900 disabled:cursor-not-allowed disabled:opacity-40 dark:text-paper-400 dark:hover:text-paper-100"
                   >
                     {user.role === "admin" ? "Demote to Subscriber" : "Promote to Analyst"}
                   </button>
@@ -147,13 +147,13 @@ export function TeamTable({ users, currentUserId }: { users: TeamUser[]; current
                   <button
                     onClick={() => remove(user)}
                     disabled={isPending || user.id === currentUserId}
-                    className="text-xs text-red-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-400"
+                    className="text-xs text-rust-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-rust-400"
                   >
                     Remove
                   </button>
                 </div>
                 {rowError[user.id] && (
-                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">{rowError[user.id]}</p>
+                  <p className="mt-1 text-xs text-rust-600 dark:text-rust-400">{rowError[user.id]}</p>
                 )}
               </td>
             </tr>

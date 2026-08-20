@@ -1,6 +1,6 @@
 const STYLES: Record<string, string> = {
-  NDA: "bg-blue-50 text-blue-700 ring-blue-600/20 dark:bg-blue-500/10 dark:text-blue-400 dark:ring-blue-500/20",
-  ANDA: "bg-zinc-100 text-zinc-600 ring-zinc-500/20 dark:bg-zinc-500/10 dark:text-zinc-400 dark:ring-zinc-500/20",
+  NDA: "bg-ledger-50 text-ledger-700 ring-ledger-600/20 dark:bg-ledger-500/10 dark:text-ledger-400 dark:ring-ledger-500/20",
+  ANDA: "bg-paper-100 text-paper-600 ring-paper-500/20 dark:bg-paper-500/10 dark:text-paper-400 dark:ring-paper-500/20",
   BLA: "bg-purple-50 text-purple-700 ring-purple-600/20 dark:bg-purple-500/10 dark:text-purple-400 dark:ring-purple-500/20",
 };
 

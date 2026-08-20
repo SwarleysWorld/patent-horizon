@@ -15,8 +15,8 @@ export default async function TeamPage() {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-4 py-6">
       <div>
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Team</h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        <h1 className="text-lg font-semibold text-paper-900 dark:text-paper-50">Team</h1>
+        <p className="text-sm text-paper-500 dark:text-paper-400">
           Manage who has access and who can make changes. Analysts can view and edit everything;
           Subscribers have read-only access to the product.
         </p>

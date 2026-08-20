@@ -21,7 +21,7 @@ function parseSearchParams(raw: Record<string, string | string[] | undefined>) {
   return result.success ? result.data : ListDrugsQuerySchema.parse({ limit: "50" });
 }
 
-export default async function Home({
+export default async function SearchPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -32,9 +32,11 @@ export default async function Home({
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="border-b border-zinc-200 px-4 py-4 dark:border-zinc-800">
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Upcoming Patent Expirations</h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+      <div className="border-b border-paper-200 px-4 py-4 dark:border-paper-800">
+        <h1 className="font-serif text-lg font-semibold text-paper-900 dark:text-paper-50">
+          Upcoming Patent Expirations
+        </h1>
+        <p className="text-sm text-paper-500 dark:text-paper-400">
           Small-molecule drugs (FDA Orange Book) and biologics (FDA Purple Book), ranked by estimated generic-entry
           date — soonest first.
         </p>

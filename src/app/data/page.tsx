@@ -26,8 +26,8 @@ export default async function DataPage() {
       <AutoRefresh />
 
       <div>
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Data</h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        <h1 className="text-lg font-semibold text-paper-900 dark:text-paper-50">Data</h1>
+        <p className="text-sm text-paper-500 dark:text-paper-400">
           Where the product&rsquo;s data comes from, when it was last refreshed, and how far along
           patent-term enrichment is. This page re-checks itself automatically every 20 seconds while
           it&rsquo;s open &mdash; leave it open to watch a long-running refresh progress.
@@ -35,7 +35,7 @@ export default async function DataPage() {
       </div>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-50">Sources</h2>
+        <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">Sources</h2>
         <div className="grid gap-3 sm:grid-cols-1">
           <SourceCard source={status.sources[0]} command="npm run ingest:orange-book" />
           <SourceCard source={status.sources[1]} command="npm run ingest:purple-book" />
@@ -44,23 +44,23 @@ export default async function DataPage() {
 
       <section>
         <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Patent Term Adjustment enrichment</h2>
+          <h2 className="text-sm font-semibold text-paper-900 dark:text-paper-50">Patent Term Adjustment enrichment</h2>
           <span
             className={
               enrichment.recentActivity
-                ? "inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:text-emerald-400 dark:ring-emerald-500/20"
-                : "inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 ring-1 ring-inset ring-zinc-300 dark:text-zinc-400 dark:ring-zinc-700"
+                ? "inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-statute-700 ring-1 ring-inset ring-statute-600/20 dark:text-statute-400 dark:ring-statute-500/20"
+                : "inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-paper-500 ring-1 ring-inset ring-paper-300 dark:text-paper-400 dark:ring-paper-700"
             }
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${enrichment.recentActivity ? "bg-emerald-500 animate-pulse" : "bg-zinc-400"}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${enrichment.recentActivity ? "bg-statute-500 animate-pulse" : "bg-paper-400"}`} />
             {enrichment.recentActivity ? "Running now" : "Idle"}
           </span>
         </div>
-        <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-          <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+        <div className="rounded-lg border border-paper-200 bg-paper-100 p-4 dark:border-paper-800 dark:bg-paper-950">
+          <p className="mb-3 text-xs text-paper-500 dark:text-paper-400">
             Runs one patent at a time against USPTO&rsquo;s rate limit &mdash; a full pass over
             every un-enriched patent takes hours, not minutes. Fully resumable: stop it anytime, and
-            <code className="mx-1 rounded bg-zinc-100 px-1 py-0.5 font-mono text-[11px] dark:bg-zinc-900">
+            <code className="mx-1 rounded bg-paper-100 px-1 py-0.5 font-mono text-[11px] dark:bg-paper-900">
               npm run enrich:pta
             </code>
             picks up exactly where it left off. Last write: {timeAgo(enrichment.lastActivityAt)}.
@@ -74,9 +74,9 @@ export default async function DataPage() {
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-50">Run it yourself</h2>
-        <div className="rounded-lg border border-zinc-200 bg-white p-4 font-mono text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
-          <p className="mb-1 font-sans text-xs text-zinc-500 dark:text-zinc-400">
+        <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">Run it yourself</h2>
+        <div className="rounded-lg border border-paper-200 bg-paper-100 p-4 font-mono text-xs text-paper-700 dark:border-paper-800 dark:bg-paper-950 dark:text-paper-300">
+          <p className="mb-1 font-sans text-xs text-paper-500 dark:text-paper-400">
             From the project directory, in order:
           </p>
           <pre className="overflow-x-auto whitespace-pre-wrap">

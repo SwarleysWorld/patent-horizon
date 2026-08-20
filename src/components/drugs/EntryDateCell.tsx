@@ -4,17 +4,17 @@ import { daysFromToday, formatDate, formatRelativeDays, urgencyOf, type Urgency 
 type DateConfidence = "confirmed" | "pending_verification";
 
 const DOT_STYLES: Record<Urgency, string> = {
-  open: "bg-emerald-500",
-  imminent: "bg-red-500",
-  upcoming: "bg-amber-500",
-  distant: "bg-zinc-400 dark:bg-zinc-600",
+  open: "bg-statute-500",
+  imminent: "bg-rust-500",
+  upcoming: "bg-flag-500",
+  distant: "bg-paper-400 dark:bg-paper-600",
 };
 
 const TEXT_STYLES: Record<Urgency, string> = {
-  open: "text-emerald-700 dark:text-emerald-400",
-  imminent: "text-red-700 dark:text-red-400",
-  upcoming: "text-amber-700 dark:text-amber-500",
-  distant: "text-zinc-500 dark:text-zinc-400",
+  open: "text-statute-700 dark:text-statute-400",
+  imminent: "text-rust-700 dark:text-rust-400",
+  upcoming: "text-flag-700 dark:text-flag-500",
+  distant: "text-paper-500 dark:text-paper-400",
 };
 
 const RELATIVE_LABEL: Record<Urgency, string> = {
@@ -52,7 +52,7 @@ export function EntryDateCell({
     return (
       <div className="flex flex-col gap-2">
         <div className="flex items-baseline gap-3">
-          <span className="text-3xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
+          <span className="text-3xl font-semibold font-mono tabular-nums text-paper-900 dark:text-paper-50">
             {formatDate(date)}
           </span>
           <span className={clsx("inline-flex items-center gap-1.5 text-sm font-medium", TEXT_STYLES[urgency])}>
@@ -65,8 +65,8 @@ export function EntryDateCell({
             className={clsx(
               "inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset",
               confidence === "confirmed"
-                ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20"
-                : "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20",
+                ? "bg-statute-50 text-statute-700 ring-statute-600/20 dark:bg-statute-500/10 dark:text-statute-400 dark:ring-statute-500/20"
+                : "bg-flag-50 text-flag-700 ring-flag-600/20 dark:bg-flag-500/10 dark:text-flag-400 dark:ring-flag-500/20",
             )}
             title={CONFIDENCE_TITLE[confidence]}
           >
@@ -79,14 +79,14 @@ export function EntryDateCell({
 
   return (
     <div className="flex flex-col items-end gap-0.5">
-      <span className="tabular-nums text-zinc-800 dark:text-zinc-200">{formatDate(date)}</span>
+      <span className="font-mono tabular-nums text-paper-800 dark:text-paper-200">{formatDate(date)}</span>
       <span className={clsx("inline-flex items-center gap-1 text-[11px] font-medium", TEXT_STYLES[urgency])}>
         <span className={clsx("h-1.5 w-1.5 rounded-full", DOT_STYLES[urgency])} />
         {relative}
       </span>
       {confidence === "pending_verification" && (
         <span
-          className="rounded bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400"
+          className="rounded bg-flag-50 px-1 py-0.5 text-[10px] font-medium text-flag-700 dark:bg-flag-500/10 dark:text-flag-400"
           title={CONFIDENCE_TITLE.pending_verification}
         >
           Pending verification

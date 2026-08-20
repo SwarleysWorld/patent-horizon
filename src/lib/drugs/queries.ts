@@ -654,3 +654,63 @@ export async function getFilterOptions(): Promise<FilterOptions> {
     exclusivityCodes: exclusivityCodeRows.map((r) => r.code).sort(),
   };
 }
+
+// ---- Portfolio-level counts (GET / home page) --------------------------
+
+export interface ExpiryHorizonCounts {
+  within30: number;
+  within90: number;
+  within365: number;
+}
+
+// Reuses COMBINED_CTE (same estimated_generic_entry_date every list/
+// search result is ranked by) rather than re-deriving the estimate — a
+// home-page summary number that disagreed with the list it's summarizing
+// would be its own kind of trust problem.
+export async function getExpiryHorizonCounts(): Promise<ExpiryHorizonCounts> {
+  const now = new Date();
+  const rows = await prisma.$queryRaw<{ within30: bigint; within90: bigint; within365: bigint }[]>(Prisma.sql`
+    WITH ${COMBINED_CTE}
+    SELECT
+      count(*) FILTER (WHERE estimated_generic_entry_date <= ${new Date(now.getTime() + 30 * MS_PER_DAY)}::timestamp) AS "within30",
+      count(*) FILTER (WHERE estimated_generic_entry_date <= ${new Date(now.getTime() + 90 * MS_PER_DAY)}::timestamp) AS "within90",
+      count(*) FILTER (WHERE estimated_generic_entry_date <= ${new Date(now.getTime() + 365 * MS_PER_DAY)}::timestamp) AS "within365"
+    FROM combined
+    WHERE estimated_generic_entry_date IS NOT NULL
+  `);
+  const row = rows[0];
+  return {
+    within30: Number(row?.within30 ?? 0),
+    within90: Number(row?.within90 ?? 0),
+    within365: Number(row?.within365 ?? 0),
+  };
+}
+
+export interface ExpiryTimelineBucket {
+  /** First day of the calendar month, YYYY-MM-DD. */
+  monthStart: string;
+  count: number;
+}
+
+// One bucket per calendar month, current month through +11 months —
+// powers the home page's timeline strip. generate_series ensures a month
+// with zero expirations still appears (as 0), rather than silently
+// disappearing from the strip.
+export async function getExpiryTimelineBuckets(): Promise<ExpiryTimelineBucket[]> {
+  const rows = await prisma.$queryRaw<{ monthStart: Date; count: bigint }[]>(Prisma.sql`
+    WITH ${COMBINED_CTE},
+    months AS (
+      SELECT date_trunc('month', now()) + (n || ' months')::interval AS month_start
+      FROM generate_series(0, 11) AS n
+    )
+    SELECT
+      months.month_start AS "monthStart",
+      count(combined.id) AS count
+    FROM months
+    LEFT JOIN combined
+      ON date_trunc('month', combined.estimated_generic_entry_date) = months.month_start
+    GROUP BY months.month_start
+    ORDER BY months.month_start
+  `);
+  return rows.map((r) => ({ monthStart: toDateString(r.monthStart), count: Number(r.count) }));
+}

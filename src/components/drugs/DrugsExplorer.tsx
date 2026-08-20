@@ -46,6 +46,11 @@ const OTHER_ADVANCED_KEYS = [
   "hasFirstCommercialMarketingDate",
 ] as const;
 
+// Must match EXPORT_ROW_CAP in src/app/api/drugs/export/route.ts — kept
+// as a separate constant (not fetched) since it's static and this avoids
+// a round-trip just to know whether to show the truncation notice.
+const EXPORT_ROW_CAP = 500;
+
 interface Pagination {
   limit: number;
   offset: number;
@@ -189,12 +194,12 @@ export function DrugsExplorer({
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="sticky top-0 z-10 flex flex-col gap-3 border-b border-zinc-200 bg-white/90 px-4 py-3 backdrop-blur dark:border-zinc-800 dark:bg-black/90">
+      <div className="sticky top-0 z-10 flex flex-col gap-3 border-b border-paper-200 bg-background/90 px-4 py-3 backdrop-blur dark:border-paper-800 dark:bg-background/90">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
               <svg
-                className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+                className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-paper-400"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -210,25 +215,25 @@ export function DrugsExplorer({
                 onFocus={() => suggestions.length > 0 && setSuggestionsOpen(true)}
                 onBlur={() => setTimeout(() => setSuggestionsOpen(false), 150)}
                 placeholder="Search brand, generic, or company…"
-                className="w-64 rounded-md border border-zinc-300 bg-white py-1.5 pr-3 pl-8 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                className="w-64 rounded-md border border-paper-300 bg-paper-100 py-1.5 pr-3 pl-8 text-sm text-paper-900 placeholder:text-paper-400 focus:border-paper-500 focus:ring-1 focus:ring-paper-500 focus:outline-none dark:border-paper-700 dark:bg-paper-900 dark:text-paper-100"
               />
-              <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-zinc-200 bg-zinc-50 px-1 font-mono text-[10px] text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 sm:block hidden">
+              <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-paper-200 bg-paper-50 px-1 font-mono text-[10px] text-paper-400 dark:border-paper-700 dark:bg-paper-800 sm:block hidden">
                 /
               </kbd>
 
               {suggestionsOpen && suggestions.length > 0 && (
-                <div className="absolute top-full left-0 z-20 mt-1 w-72 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+                <div className="absolute top-full left-0 z-20 mt-1 w-72 overflow-hidden rounded-md border border-paper-200 bg-paper-100 shadow-lg dark:border-paper-700 dark:bg-paper-900">
                   {suggestions.map((s) => (
                     <button
                       key={`${s.source}-${s.id}`}
                       type="button"
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => selectSuggestion(s)}
-                      className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                      className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-paper-50 dark:hover:bg-paper-800"
                     >
                       <span>
-                        <span className="font-medium text-zinc-900 dark:text-zinc-50">{titleCase(s.name)}</span>{" "}
-                        <span className="text-zinc-400">{titleCase(s.alternateName)}</span>
+                        <span className="font-medium text-paper-900 dark:text-paper-50">{titleCase(s.name)}</span>{" "}
+                        <span className="text-paper-400">{titleCase(s.alternateName)}</span>
                       </span>
                       <SourceBadge source={s.source} />
                     </button>
@@ -237,7 +242,7 @@ export function DrugsExplorer({
               )}
             </div>
 
-            <div className="flex items-center gap-1 rounded-md bg-zinc-100 p-0.5 dark:bg-zinc-900">
+            <div className="flex items-center gap-1 rounded-md bg-paper-100 p-0.5 dark:bg-paper-900">
               {HORIZONS.map((h) => {
                 const active = h.days === activeHorizon;
                 return (
@@ -247,8 +252,8 @@ export function DrugsExplorer({
                     className={clsx(
                       "rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors",
                       active
-                        ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-zinc-50"
-                        : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100",
+                        ? "bg-paper-100 text-paper-900 shadow-sm dark:bg-paper-700 dark:text-paper-50"
+                        : "text-paper-500 hover:text-paper-900 dark:text-paper-400 dark:hover:text-paper-100",
                     )}
                   >
                     {h.label}
@@ -262,8 +267,8 @@ export function DrugsExplorer({
               className={clsx(
                 "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
                 advancedOpen || activeAdvancedCount > 0
-                  ? "border-zinc-400 bg-zinc-100 text-zinc-900 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-50"
-                  : "border-zinc-300 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900",
+                  ? "border-paper-400 bg-paper-100 text-paper-900 dark:border-paper-600 dark:bg-paper-800 dark:text-paper-50"
+                  : "border-paper-300 text-paper-600 hover:bg-paper-50 dark:border-paper-700 dark:text-paper-400 dark:hover:bg-paper-900",
               )}
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -271,7 +276,7 @@ export function DrugsExplorer({
               </svg>
               Advanced
               {activeAdvancedCount > 0 && (
-                <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-zinc-900 px-1 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900">
+                <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-paper-900 px-1 text-[10px] font-semibold text-paper-50 dark:bg-paper-100 dark:text-paper-900">
                   {activeAdvancedCount}
                 </span>
               )}
@@ -288,7 +293,7 @@ export function DrugsExplorer({
 
             <a
               href={exportHref}
-              className="flex items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900"
+              className="flex items-center gap-1.5 rounded-md border border-paper-300 px-2.5 py-1.5 text-xs font-medium text-paper-600 hover:bg-paper-50 dark:border-paper-700 dark:text-paper-400 dark:hover:bg-paper-900"
               title="Export the current filtered results as CSV"
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -296,9 +301,17 @@ export function DrugsExplorer({
               </svg>
               Export CSV
             </a>
+            {pagination.total > EXPORT_ROW_CAP && (
+              <span
+                className="text-[11px] text-paper-500 dark:text-paper-400"
+                title={`Export includes the top ${EXPORT_ROW_CAP} of ${pagination.total.toLocaleString()} matches, ranked the same way as this list`}
+              >
+                top {EXPORT_ROW_CAP} of {pagination.total.toLocaleString()}
+              </span>
+            )}
           </div>
 
-          <div className="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+          <div className="flex items-center gap-3 text-xs text-paper-500 dark:text-paper-400">
             <span
               className={clsx("transition-opacity", isPending ? "opacity-100" : "opacity-0")}
               aria-hidden={!isPending}
@@ -315,7 +328,7 @@ export function DrugsExplorer({
         </div>
 
         {advancedOpen && (
-          <div className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+          <div className="flex flex-col gap-3 rounded-md border border-paper-200 bg-paper-50/60 p-3 dark:border-paper-800 dark:bg-paper-900/40">
             <div className="flex flex-wrap items-end gap-3">
               <MultiSelectFilter
                 label="Modality"
@@ -373,27 +386,27 @@ export function DrugsExplorer({
               />
             </div>
 
-            <div className="flex flex-wrap items-end gap-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+            <div className="flex flex-wrap items-end gap-3 border-t border-paper-200 pt-3 dark:border-paper-800">
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Est. entry after</label>
+                <label className="text-[11px] font-medium text-paper-500 dark:text-paper-400">Est. entry after</label>
                 <input
                   type="date"
                   value={expiresAfter}
                   onChange={(e) => navigate({ expiresAfter: e.target.value || null })}
-                  className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                  className="rounded-md border border-paper-300 bg-paper-100 px-2 py-1 text-xs text-paper-900 focus:border-paper-500 focus:ring-1 focus:ring-paper-500 focus:outline-none dark:border-paper-700 dark:bg-paper-900 dark:text-paper-100"
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Est. entry before</label>
+                <label className="text-[11px] font-medium text-paper-500 dark:text-paper-400">Est. entry before</label>
                 <input
                   type="date"
                   value={expiresBefore}
                   onChange={(e) => navigate({ expiresBefore: e.target.value || null })}
-                  className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                  className="rounded-md border border-paper-300 bg-paper-100 px-2 py-1 text-xs text-paper-900 focus:border-paper-500 focus:ring-1 focus:ring-paper-500 focus:outline-none dark:border-paper-700 dark:bg-paper-900 dark:text-paper-100"
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label className="flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                <label className="flex items-center gap-1 text-[11px] font-medium text-statute-700 dark:text-statute-400">
                   Min. PTA gap (days)
                 </label>
                 <input
@@ -402,30 +415,30 @@ export function DrugsExplorer({
                   value={minPtaGapDays}
                   onChange={(e) => navigate({ minPtaGapDays: e.target.value || null })}
                   placeholder="e.g. 180"
-                  className="w-28 rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none dark:border-emerald-700 dark:bg-zinc-900 dark:text-zinc-100"
+                  className="w-28 rounded-md border border-statute-300 bg-paper-100 px-2 py-1 text-xs text-paper-900 focus:border-statute-500 focus:ring-1 focus:ring-statute-500 focus:outline-none dark:border-statute-700 dark:bg-paper-900 dark:text-paper-100"
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Generic challenge</label>
+                <label className="text-[11px] font-medium text-paper-500 dark:text-paper-400">Generic challenge</label>
                 <div className="flex items-center gap-3 pt-1">
-                  <label className="flex items-center gap-1.5 text-xs text-zinc-700 dark:text-zinc-300">
+                  <label className="flex items-center gap-1.5 text-xs text-paper-700 dark:text-paper-300">
                     <input
                       type="checkbox"
                       checked={hasGenericChallenge}
                       onChange={(e) => navigate({ hasGenericChallenge: e.target.checked ? "true" : null })}
-                      className="rounded border-zinc-300 dark:border-zinc-700"
+                      className="rounded border-paper-300 dark:border-paper-700"
                     />
                     Has a challenge
                   </label>
                   <label
-                    className="flex items-center gap-1.5 text-xs text-zinc-700 dark:text-zinc-300"
+                    className="flex items-center gap-1.5 text-xs text-paper-700 dark:text-paper-300"
                     title="A generic has actually begun commercial marketing, per FDA's Paragraph IV list — independent of whether a 180-day exclusivity decision has been made"
                   >
                     <input
                       type="checkbox"
                       checked={hasFirstCommercialMarketingDate}
                       onChange={(e) => navigate({ hasFirstCommercialMarketingDate: e.target.checked ? "true" : null })}
-                      className="rounded border-zinc-300 dark:border-zinc-700"
+                      className="rounded border-paper-300 dark:border-paper-700"
                     />
                     Generic on market
                   </label>
@@ -435,7 +448,7 @@ export function DrugsExplorer({
               {activeAdvancedCount > 0 && (
                 <button
                   onClick={clearAdvanced}
-                  className="rounded-md px-2 py-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                  className="rounded-md px-2 py-1.5 text-xs font-medium text-paper-500 hover:text-paper-900 dark:text-paper-400 dark:hover:text-paper-100"
                 >
                   Clear all
                 </button>
@@ -449,9 +462,9 @@ export function DrugsExplorer({
         <EmptyState hasFilters={hasAnyFilter} />
       ) : (
         <div className={clsx("transition-opacity", isPending && "opacity-60")}>
-          <p className="px-4 pt-3 text-xs text-zinc-500 dark:text-zinc-400">
+          <p className="px-4 pt-3 text-xs text-paper-500 dark:text-paper-400">
             Dates flagged{" "}
-            <span className="rounded bg-amber-50 px-1 py-0.5 font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+            <span className="rounded bg-flag-50 px-1 py-0.5 font-medium text-flag-700 dark:bg-flag-500/10 dark:text-flag-400">
               Pending
             </span>{" "}
             haven&apos;t been checked against USPTO records yet and may still move — everything else is either an FDA
@@ -460,7 +473,7 @@ export function DrugsExplorer({
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1180px] border-collapse text-sm">
             <thead>
-              <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr className="border-b border-paper-200 text-left text-xs text-paper-500 dark:border-paper-800 dark:text-paper-400">
                 <th className="px-4 py-2 font-medium">Result</th>
                 <th className="px-4 py-2 font-medium">Company</th>
                 <th className="px-4 py-2 font-medium">Source</th>
@@ -472,8 +485,8 @@ export function DrugsExplorer({
                   <button
                     onClick={() => navigate({ sort: "pta_gap_desc" })}
                     className={clsx(
-                      "inline-flex items-center gap-1 hover:text-zinc-900 dark:hover:text-zinc-100",
-                      sort === "pta_gap_desc" && "text-emerald-700 dark:text-emerald-400",
+                      "inline-flex items-center gap-1 hover:text-paper-900 dark:hover:text-paper-100",
+                      sort === "pta_gap_desc" && "text-statute-700 dark:text-statute-400",
                     )}
                     title="Sort by biggest USPTO Patent Term Adjustment gap"
                   >
@@ -485,12 +498,12 @@ export function DrugsExplorer({
                   <button
                     onClick={() => navigate({ sort: sort === "entry_asc" ? "entry_desc" : "entry_asc" })}
                     className={clsx(
-                      "inline-flex items-center gap-1 hover:text-zinc-900 dark:hover:text-zinc-100",
-                      sort !== "pta_gap_desc" && "text-zinc-900 dark:text-zinc-100",
+                      "inline-flex items-center gap-1 hover:text-paper-900 dark:hover:text-paper-100",
+                      sort !== "pta_gap_desc" && "text-paper-900 dark:text-paper-100",
                     )}
                   >
                     Est. Generic Entry
-                    {sort !== "pta_gap_desc" && <span className="text-zinc-400">{sort === "entry_asc" ? "▲" : "▼"}</span>}
+                    {sort !== "pta_gap_desc" && <span className="text-paper-400">{sort === "entry_asc" ? "▲" : "▼"}</span>}
                   </button>
                 </th>
               </tr>
@@ -500,27 +513,27 @@ export function DrugsExplorer({
                 <tr
                   key={row.id}
                   onClick={() => router.push(detailHref(row))}
-                  className="cursor-pointer border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
+                  className="cursor-pointer border-b border-paper-100 last:border-0 hover:bg-paper-50 dark:border-paper-900 dark:hover:bg-paper-900/60"
                 >
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-1.5">
-                      <Link href={detailHref(row)} className="font-medium text-zinc-900 hover:underline dark:text-zinc-50">
+                      <Link href={detailHref(row)} className="font-medium text-paper-900 hover:underline dark:text-paper-50">
                         {titleCase(row.name)}
                       </Link>
                       {row.hasGenericChallenge && (
                         <span
-                          className="inline-flex items-center rounded bg-blue-50 px-1 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-500/10 dark:text-blue-400"
+                          className="inline-flex items-center rounded bg-ledger-50 px-1 py-0.5 text-[10px] font-medium text-ledger-700 dark:bg-ledger-500/10 dark:text-ledger-400"
                           title="Has a filed FDA Paragraph IV generic-challenge on record"
                         >
                           Challenge
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                    <div className="text-xs text-paper-500 dark:text-paper-400">
                       {titleCase(row.alternateName)} · {row.strength}
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-zinc-600 dark:text-zinc-400">{titleCase(row.company.name)}</td>
+                  <td className="px-4 py-2.5 text-paper-600 dark:text-paper-400">{titleCase(row.company.name)}</td>
                   <td className="px-4 py-2.5">
                     <SourceBadge source={row.source} />
                   </td>
@@ -531,10 +544,10 @@ export function DrugsExplorer({
                   <td className="px-4 py-2.5">
                     <ClassCell modality={row.modality} drugClass={row.drugClass} filterOptions={filterOptions} />
                   </td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
+                  <td className="px-4 py-2.5 text-right font-mono tabular-nums text-paper-600 dark:text-paper-400">
                     {row.patentCount}
                   </td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
+                  <td className="px-4 py-2.5 text-right font-mono tabular-nums text-paper-600 dark:text-paper-400">
                     {row.exclusivityCount}
                   </td>
                   <td className="px-4 py-2.5 text-right">
@@ -553,7 +566,7 @@ export function DrugsExplorer({
         </div>
       )}
 
-      <div className="flex items-center justify-between border-t border-zinc-200 px-4 py-3 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+      <div className="flex items-center justify-between border-t border-paper-200 px-4 py-3 text-xs text-paper-500 dark:border-paper-800 dark:text-paper-400">
         <span>
           {pagination.total === 0
             ? "No results"
@@ -563,14 +576,14 @@ export function DrugsExplorer({
           <button
             disabled={pagination.offset === 0}
             onClick={() => navigate({ offset: String(Math.max(0, pagination.offset - pagination.limit)) }, false)}
-            className="rounded border border-zinc-300 px-2.5 py-1 font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="rounded border border-paper-300 px-2.5 py-1 font-medium text-paper-700 hover:bg-paper-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-paper-700 dark:text-paper-300 dark:hover:bg-paper-900"
           >
             Prev
           </button>
           <button
             disabled={!pagination.hasMore}
             onClick={() => navigate({ offset: String(pagination.offset + pagination.limit) }, false)}
-            className="rounded border border-zinc-300 px-2.5 py-1 font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="rounded border border-paper-300 px-2.5 py-1 font-medium text-paper-700 hover:bg-paper-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-paper-700 dark:text-paper-300 dark:hover:bg-paper-900"
           >
             Next
           </button>
@@ -594,10 +607,10 @@ function ClassCell({
     return <ModalityBadge modality={modality} label={label} />;
   }
   if (drugClass) {
-    return <span className="text-xs text-zinc-500 dark:text-zinc-400">{drugClass}</span>;
+    return <span className="text-xs text-paper-500 dark:text-paper-400">{drugClass}</span>;
   }
   if (modality === "UNCLASSIFIED") {
-    return <span className="text-xs text-zinc-300 dark:text-zinc-700" title="No confident classification">Unclassified</span>;
+    return <span className="text-xs text-paper-300 dark:text-paper-700" title="No confident classification">Unclassified</span>;
   }
-  return <span className="text-xs text-zinc-300 dark:text-zinc-700">—</span>;
+  return <span className="text-xs text-paper-300 dark:text-paper-700">—</span>;
 }

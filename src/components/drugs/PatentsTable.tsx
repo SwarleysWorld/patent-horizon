@@ -6,7 +6,7 @@ function AdjustmentBadge({ days }: { days: number | null }) {
   if (days === null) {
     return (
       <span
-        className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400"
+        className="inline-flex items-center rounded bg-flag-50 px-1.5 py-0.5 text-[11px] font-medium text-flag-700 dark:bg-flag-500/10 dark:text-flag-400"
         title="Not yet checked against USPTO Patent Term Adjustment records — the effective expiry shown is the source's own listed figure and could move once verified"
       >
         Pending
@@ -15,7 +15,7 @@ function AdjustmentBadge({ days }: { days: number | null }) {
   }
   if (days === 0) {
     return (
-      <span className="text-zinc-500 dark:text-zinc-400" title="USPTO-verified — no adjustment applied">
+      <span className="text-paper-500 dark:text-paper-400" title="USPTO-verified — no adjustment applied">
         0d
       </span>
     );
@@ -24,10 +24,10 @@ function AdjustmentBadge({ days }: { days: number | null }) {
   return (
     <span
       className={clsx(
-        "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
+        "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium font-mono tabular-nums",
         positive
-          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"
-          : "bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400",
+          ? "bg-statute-50 text-statute-700 dark:bg-statute-500/10 dark:text-statute-400"
+          : "bg-rust-50 text-rust-700 dark:bg-rust-500/10 dark:text-rust-400",
       )}
       title={`Effective expiry is ${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} ${positive ? "later" : "earlier"} than the nominal date`}
     >
@@ -38,12 +38,12 @@ function AdjustmentBadge({ days }: { days: number | null }) {
 }
 
 function CoverageTags({ substance, product }: { substance: boolean; product: boolean }) {
-  if (!substance && !product) return <span className="text-zinc-300 dark:text-zinc-700">—</span>;
+  if (!substance && !product) return <span className="text-paper-300 dark:text-paper-700">—</span>;
   return (
     <div className="flex gap-1">
       {substance && (
         <span
-          className="rounded bg-zinc-100 px-1 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+          className="rounded bg-paper-100 px-1 py-0.5 text-[10px] font-medium text-paper-600 dark:bg-paper-800 dark:text-paper-400"
           title="Covers drug substance"
         >
           DS
@@ -51,7 +51,7 @@ function CoverageTags({ substance, product }: { substance: boolean; product: boo
       )}
       {product && (
         <span
-          className="rounded bg-zinc-100 px-1 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+          className="rounded bg-paper-100 px-1 py-0.5 text-[10px] font-medium text-paper-600 dark:bg-paper-800 dark:text-paper-400"
           title="Covers drug product"
         >
           DP
@@ -63,7 +63,7 @@ function CoverageTags({ substance, product }: { substance: boolean; product: boo
 
 export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
   if (patents.length === 0) {
-    return <p className="px-1 py-6 text-sm text-zinc-500 dark:text-zinc-400">No patents on file for this drug.</p>;
+    return <p className="px-1 py-6 text-sm text-paper-500 dark:text-paper-400">No patents on file for this drug.</p>;
   }
 
   const hasPending = patents.some((p) => p.expiryAdjustmentDays === null);
@@ -71,15 +71,15 @@ export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
   return (
     <div className="overflow-x-auto">
       {hasPending && (
-        <p className="mb-2 px-1 text-xs text-zinc-500 dark:text-zinc-400">
-          <span className="font-medium text-amber-700 dark:text-amber-400">Pending</span> means this patent&apos;s
+        <p className="mb-2 px-1 text-xs text-paper-500 dark:text-paper-400">
+          <span className="font-medium text-flag-700 dark:text-flag-400">Pending</span> means this patent&apos;s
           expiry hasn&apos;t been checked against USPTO records yet — the &quot;Effective expiry&quot; shown is still
           the source&apos;s own listed date and could move once verified.
         </p>
       )}
       <table className="w-full min-w-[720px] border-collapse text-sm">
         <thead>
-          <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+          <tr className="border-b border-paper-200 text-left text-xs text-paper-500 dark:border-paper-800 dark:text-paper-400">
             <th className="py-2 pr-4 font-medium">Patent</th>
             <th className="py-2 pr-4 font-medium">Covers</th>
             <th className="py-2 pr-4 font-medium">Use code</th>
@@ -95,14 +95,14 @@ export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
             <tr
               key={p.id}
               className={clsx(
-                "border-b border-zinc-100 last:border-0 dark:border-zinc-900",
+                "border-b border-paper-100 last:border-0 dark:border-paper-900",
                 p.delistedAt && "opacity-50",
               )}
             >
-              <td className="py-2.5 pr-4 font-mono text-xs text-zinc-800 dark:text-zinc-200">
+              <td className="py-2.5 pr-4 font-mono text-xs text-paper-800 dark:text-paper-200">
                 {p.patentNumber}
                 {p.delistedAt && (
-                  <span className="ml-2 rounded bg-zinc-100 px-1 py-0.5 text-[10px] font-sans text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  <span className="ml-2 rounded bg-paper-100 px-1 py-0.5 text-[10px] font-sans text-paper-500 dark:bg-paper-800 dark:text-paper-400">
                     Delisted
                   </span>
                 )}
@@ -110,13 +110,13 @@ export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
               <td className="py-2.5 pr-4">
                 <CoverageTags substance={p.coversDrugSubstance} product={p.coversDrugProduct} />
               </td>
-              <td className="py-2.5 pr-4 font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                {p.useCode || <span className="text-zinc-300 dark:text-zinc-700">—</span>}
+              <td className="py-2.5 pr-4 font-mono text-xs text-paper-500 dark:text-paper-400">
+                {p.useCode || <span className="text-paper-300 dark:text-paper-700">—</span>}
               </td>
-              <td className="py-2.5 pr-4 tabular-nums text-zinc-500 dark:text-zinc-400">
+              <td className="py-2.5 pr-4 font-mono tabular-nums text-paper-500 dark:text-paper-400">
                 {formatDate(p.nominalExpiryDate)}
               </td>
-              <td className="py-2.5 pr-4 font-medium tabular-nums text-zinc-900 dark:text-zinc-50">
+              <td className="py-2.5 pr-4 font-medium font-mono tabular-nums text-paper-900 dark:text-paper-50">
                 {formatDate(p.effectiveExpiryDate)}
               </td>
               <td className="py-2.5 pr-4 text-right">

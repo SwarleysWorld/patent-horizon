@@ -6,11 +6,15 @@ import { listDrugs } from "@/lib/drugs/queries";
 import { getSessionUser } from "@/lib/session";
 import { MODALITY_LABELS, type Modality } from "@/lib/classification/modality";
 
-// Larger than the entire current combined dataset (~50,700 rows as of
-// writing), so this is effectively "everything matching the filters"
-// today — a safety cap, not a real-world limit, so a future data-volume
-// increase can't turn this into an accidental full-table dump.
-const EXPORT_ROW_CAP = 50_000;
+// A deliberate cap, not a safety net against an edge case — a bulk export
+// is meant for a shortlist someone will actually work through, not a dump
+// of the whole filtered dataset. `pagination.total` (the true match
+// count, computed before this LIMIT applies) is always reported alongside
+// the file — via response headers here, and proactively in the UI before
+// the user even clicks — so a truncated export is stated plainly, never
+// silent. Only bounds the export; browsing/pagination in the search UI
+// itself is unaffected.
+const EXPORT_ROW_CAP = 500;
 
 const CSV_COLUMNS = [
   "source",
@@ -86,6 +90,12 @@ export async function GET(request: NextRequest) {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": `attachment; filename="patent-horizon-export-${new Date().toISOString().slice(0, 10)}.csv"`,
+        // Programmatic signal for any consumer hitting this endpoint
+        // directly — the web UI additionally shows this proactively
+        // before the request is even made (see DrugsExplorer's export
+        // link), so a truncated export is never a surprise.
+        "X-Export-Row-Cap": String(EXPORT_ROW_CAP),
+        "X-Export-Total-Matches": String(result.pagination.total),
       },
     });
   } catch (error) {

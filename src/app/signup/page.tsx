@@ -6,8 +6,8 @@ export default function SignupPage() {
     <div className="flex flex-1 items-center justify-center px-4 py-12">
       <div className="flex w-full max-w-sm flex-col gap-6">
         <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Create your account</h1>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          <h1 className="text-lg font-semibold text-paper-900 dark:text-paper-50">Create your account</h1>
+          <p className="text-sm text-paper-500 dark:text-paper-400">
             Start tracking pharmaceutical patent expirations.
           </p>
         </div>

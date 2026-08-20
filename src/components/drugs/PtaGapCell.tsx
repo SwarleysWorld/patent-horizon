@@ -13,7 +13,7 @@ import clsx from "clsx";
 export function PtaGapCell({ days, patentCount }: { days: number | null; patentCount: number }) {
   if (patentCount === 0) {
     return (
-      <span className="text-xs text-zinc-300 dark:text-zinc-700" title="No patents on file for this result">
+      <span className="text-xs text-paper-300 dark:text-paper-700" title="No patents on file for this result">
         —
       </span>
     );
@@ -21,7 +21,7 @@ export function PtaGapCell({ days, patentCount }: { days: number | null; patentC
   if (days === null) {
     return (
       <span
-        className="inline-flex items-center rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20"
+        className="inline-flex items-center rounded-md bg-flag-50 px-2 py-1 text-xs font-medium text-flag-700 ring-1 ring-inset ring-flag-600/20 dark:bg-flag-500/10 dark:text-flag-400 dark:ring-flag-500/20"
         title="This result has patents on file, but none have been checked against USPTO Patent Term Adjustment records yet"
       >
         Pending
@@ -31,7 +31,7 @@ export function PtaGapCell({ days, patentCount }: { days: number | null; patentC
   if (days === 0) {
     return (
       <span
-        className="text-xs tabular-nums text-zinc-400 dark:text-zinc-600"
+        className="text-xs font-mono tabular-nums text-paper-400 dark:text-paper-600"
         title="USPTO-verified — no adjustment applied"
       >
         0d
@@ -42,10 +42,10 @@ export function PtaGapCell({ days, patentCount }: { days: number | null; patentC
   return (
     <span
       className={clsx(
-        "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold tabular-nums ring-1 ring-inset",
+        "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold font-mono tabular-nums ring-1 ring-inset",
         positive
-          ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20"
-          : "bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/20",
+          ? "bg-statute-50 text-statute-700 ring-statute-600/20 dark:bg-statute-500/10 dark:text-statute-400 dark:ring-statute-500/20"
+          : "bg-rust-50 text-rust-700 ring-rust-600/20 dark:bg-rust-500/10 dark:text-rust-400 dark:ring-rust-500/20",
       )}
       title={`USPTO-verified: effective expiry is ${Math.abs(days).toLocaleString()} day${Math.abs(days) === 1 ? "" : "s"} ${positive ? "later" : "earlier"} than the originally listed date`}
     >

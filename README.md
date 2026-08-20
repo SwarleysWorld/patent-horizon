@@ -971,9 +971,14 @@ curl "http://localhost:3000/api/search/autocomplete?q=hum"
 
 ### `GET /api/drugs/export` — CSV of the current filtered results
 
-Same filters as `GET /api/drugs`; `limit`/`offset` are ignored (everything
-matching, up to a 50,000-row safety cap). Returns `text/csv` with a
-`Content-Disposition: attachment` header.
+Same filters as `GET /api/drugs`; `limit`/`offset` are ignored — capped at
+the top 500 matching rows, a deliberate bound (a bulk export is for a
+shortlist someone will work through, not a dump of the whole filtered
+set), not a stopgap against an edge case. `X-Export-Row-Cap` and
+`X-Export-Total-Matches` response headers let a caller detect truncation;
+the web UI also states this proactively next to the export button
+whenever a filter matches more than 500 rows, before the file downloads.
+Returns `text/csv` with a `Content-Disposition: attachment` header.
 
 ```bash
 curl "http://localhost:3000/api/drugs/export?minPtaGapDays=150" -o export.csv
@@ -1287,9 +1292,13 @@ narrowing results.
 
 `GET /api/drugs/export` accepts the exact same filters as `/api/drugs`
 (everything except `limit`/`offset`, which are overridden internally —
-this streams *every* matching row up to a 50,000-row safety cap, not one
-page) and reuses the identical query-building code, so the exported rows
-always exactly match whatever's on screen.
+capped at the top 500 matching rows, not one page) and reuses the
+identical query-building code, so the exported rows always exactly match
+whatever's on screen, just capped. 500 is a deliberate ceiling, not a
+technical safety net (the old cap was 50,000, effectively unbounded) —
+`pagination.total` (the true match count, computed before the cap
+applies) is always available, so a truncated export is stated plainly
+rather than silently discovered after the fact.
 
 ### `GET /api/drugs/filter-options` — current filter vocabulary
 

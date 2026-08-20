@@ -60,15 +60,15 @@ export function MultiSelectFilter({
 
   return (
     <div ref={containerRef} className="relative flex flex-col gap-1">
-      <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">{label}</label>
+      <label className="text-[11px] font-medium text-paper-500 dark:text-paper-400">{label}</label>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={clsx(
           "flex min-w-32 items-center justify-between gap-2 rounded-md border px-2 py-1 text-xs",
           values.length > 0
-            ? "border-zinc-400 bg-zinc-50 text-zinc-900 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-50"
-            : "border-zinc-300 bg-white text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400",
+            ? "border-paper-400 bg-paper-50 text-paper-900 dark:border-paper-600 dark:bg-paper-800 dark:text-paper-50"
+            : "border-paper-300 bg-paper-100 text-paper-500 dark:border-paper-700 dark:bg-paper-900 dark:text-paper-400",
         )}
       >
         <span>{values.length > 0 ? `${values.length} selected` : "Any"}</span>
@@ -78,47 +78,47 @@ export function MultiSelectFilter({
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 z-20 mt-1 flex max-h-80 w-64 flex-col overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="absolute top-full left-0 z-20 mt-1 flex max-h-80 w-64 flex-col overflow-hidden rounded-md border border-paper-200 bg-paper-100 shadow-lg dark:border-paper-700 dark:bg-paper-900">
           {options.length > 8 && (
-            <div className="border-b border-zinc-100 p-1.5 dark:border-zinc-800">
+            <div className="border-b border-paper-100 p-1.5 dark:border-paper-800">
               <input
                 autoFocus
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={`Filter ${label.toLowerCase()}…`}
-                className="w-full rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs text-zinc-900 focus:border-zinc-400 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+                className="w-full rounded border border-paper-200 bg-paper-50 px-2 py-1 text-xs text-paper-900 focus:border-paper-400 focus:outline-none dark:border-paper-700 dark:bg-paper-800 dark:text-paper-100"
               />
             </div>
           )}
           <div className="flex-1 overflow-y-auto py-1">
             {filteredOptions.length === 0 && (
-              <p className="px-3 py-2 text-xs text-zinc-400">No matches.</p>
+              <p className="px-3 py-2 text-xs text-paper-400">No matches.</p>
             )}
             {filteredOptions.map((o) => (
               <label
                 key={o.value}
-                className="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-xs hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                className="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-xs hover:bg-paper-50 dark:hover:bg-paper-800"
               >
                 <span className="flex items-center gap-2">
                   <input
                     type="checkbox"
                     checked={values.includes(o.value)}
                     onChange={() => toggle(o.value)}
-                    className="h-3.5 w-3.5 rounded border-zinc-300 dark:border-zinc-600"
+                    className="h-3.5 w-3.5 rounded border-paper-300 dark:border-paper-600"
                   />
-                  <span className="text-zinc-700 dark:text-zinc-300">{o.label}</span>
+                  <span className="text-paper-700 dark:text-paper-300">{o.label}</span>
                 </span>
-                {o.count != null && <span className="tabular-nums text-zinc-400">{o.count.toLocaleString()}</span>}
+                {o.count != null && <span className="font-mono tabular-nums text-paper-400">{o.count.toLocaleString()}</span>}
               </label>
             ))}
           </div>
           {values.length > 0 && (
-            <div className="border-t border-zinc-100 p-1.5 dark:border-zinc-800">
+            <div className="border-t border-paper-100 p-1.5 dark:border-paper-800">
               <button
                 type="button"
                 onClick={() => onChange([])}
-                className="w-full rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                className="w-full rounded px-2 py-1 text-xs font-medium text-paper-500 hover:bg-paper-50 hover:text-paper-900 dark:hover:bg-paper-800 dark:hover:text-paper-100"
               >
                 Clear
               </button>

@@ -149,8 +149,10 @@ export function buildOpenApiDocument(baseUrl: string) {
           summary: "Export the current filtered results as CSV",
           description:
             "Accepts the exact same filters as GET /api/drugs (everything except `limit`/`offset`, which " +
-            "are overridden internally — this returns every matching row up to a 50,000-row safety cap, not " +
-            "one page) and streams a CSV file with a Content-Disposition attachment header.",
+            "are overridden internally — this returns up to the top 500 matching rows, not one page) and " +
+            "streams a CSV file with a Content-Disposition attachment header. The response also carries " +
+            "X-Export-Row-Cap and X-Export-Total-Matches headers, so a caller can detect truncation when " +
+            "the filtered result set exceeds 500 rows.",
           parameters: queryParamsFrom(ListDrugsQuerySchema),
           responses: {
             "200": {
