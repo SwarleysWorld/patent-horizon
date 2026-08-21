@@ -9,17 +9,28 @@ import { runOrangeBookIngestion, ORANGE_BOOK_SOURCE_NAME } from "./orangeBook";
 import { runPurpleBookIngestion, PURPLE_BOOK_SOURCE_NAME } from "./purpleBook";
 import { runParagraphIVIngestion, PARAGRAPH_IV_SOURCE_NAME } from "./paragraphIV";
 import { runPtaEnrichment, PTA_SOURCE_NAME } from "./pta";
+import { runLitigationIngestion, LITIGATION_SOURCE_NAME } from "./litigation";
 
-export type PipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta";
+export type PipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta" | "litigation";
 
 const PIPELINES: Record<PipelineKey, { sourceName: string; run: () => Promise<{ status: string }> }> = {
   orange_book: { sourceName: ORANGE_BOOK_SOURCE_NAME, run: () => runOrangeBookIngestion() },
   purple_book: { sourceName: PURPLE_BOOK_SOURCE_NAME, run: () => runPurpleBookIngestion() },
   paragraph_iv: { sourceName: PARAGRAPH_IV_SOURCE_NAME, run: () => runParagraphIVIngestion() },
   pta: { sourceName: PTA_SOURCE_NAME, run: () => runPtaEnrichment() },
+  litigation: { sourceName: LITIGATION_SOURCE_NAME, run: () => runLitigationIngestion() },
 };
 
-export const PIPELINE_ORDER: PipelineKey[] = ["orange_book", "purple_book", "paragraph_iv", "pta"];
+// "Refresh all" mirrors `npm run refresh:data`'s scope on purpose — it is
+// NOT every pipeline this app knows about. PTA enrichment (hours-long,
+// strict USPTO rate limit) and litigation (CourtListener's 5 req/min,
+// 125/day budget) are both deliberately excluded from that script for the
+// same reason (see refresh-data.ts and litigation/index.ts's own top
+// comments), and used to be silently included here anyway — so one
+// "Refresh all" click could leave the button reading "Running…" for hours
+// with nothing on the page explaining why. Both keep their own dedicated
+// trigger instead; PIPELINE_ORDER here is only "all", not "every".
+export const PIPELINE_ORDER: PipelineKey[] = ["orange_book", "purple_book", "paragraph_iv"];
 
 // In-memory only — resets on server restart, which is fine: this is the
 // fast/atomic guard against a same-process double-click race (synchronous
@@ -82,7 +93,7 @@ export async function triggerAll(): Promise<TriggerResult> {
   );
   if (busy.length > 0) return { ok: false, reason: "already_running", busy };
 
-  // Reserve all four atomically (synchronously, before any await inside
+  // Reserve all of them atomically (synchronously, before any await inside
   // the chain below) so an individual trigger can't sneak into pipeline
   // #2's slot while #1 is still running as part of this chain.
   for (const k of PIPELINE_ORDER) runningInMemory.add(k);

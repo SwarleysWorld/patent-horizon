@@ -11,6 +11,13 @@ import { getUnlinkedManualEntries, getManualEntryAuditLog } from "@/lib/ingestio
 
 export const dynamic = "force-dynamic";
 
+function errorMessageOf(summary: unknown): string {
+  if (summary && typeof summary === "object" && typeof (summary as Record<string, unknown>).errorMessage === "string") {
+    return (summary as Record<string, unknown>).errorMessage as string;
+  }
+  return "Last run failed.";
+}
+
 function timeAgo(d: Date | null): string {
   if (!d) return "never";
   const seconds = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
@@ -29,31 +36,74 @@ export default async function DataPage() {
     getManualEntryAuditLog(),
   ]);
   const { enrichment } = status;
-  const anyRunning = status.sources.some((s) => s.lastRun?.status === "RUNNING");
+  // "Refresh all" only reserves/runs the three fast FDA pipelines (see
+  // orchestrator.ts's PIPELINE_ORDER) — PTA and litigation each have their
+  // own independent trigger and rate limit, so they're deliberately not
+  // part of this check.
+  const fastSources = status.sources.slice(0, 3);
+  const anyFastRunning = fastSources.some((s) => s.lastRun?.status === "RUNNING");
+  const runningSource = status.sources.find((s) => s.lastRun?.status === "RUNNING") ?? null;
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-4 py-6">
-      <AutoRefresh />
+      <AutoRefresh fast={runningSource != null} />
 
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-paper-900 dark:text-paper-50">Data</h1>
           <p className="text-sm text-paper-500 dark:text-paper-400">
             Where the product&rsquo;s data comes from, when it was last refreshed, and how far along
-            patent-term enrichment is. This page re-checks itself automatically every 20 seconds while
-            it&rsquo;s open &mdash; leave it open to watch a long-running refresh progress.
+            patent-term enrichment is. This page re-checks itself automatically (every 4 seconds while
+            something&rsquo;s running, otherwise every 20) &mdash; leave it open to watch a run progress.
           </p>
         </div>
-        <TriggerButton pipeline="all" label="Refresh all" disabled={anyRunning} />
+        <TriggerButton pipeline="all" label="Refresh all" disabled={anyFastRunning} />
       </div>
+
+      {runningSource && (
+        <div className="flex items-center gap-2 rounded-md border border-ledger-200 bg-ledger-50 px-3 py-2 text-xs text-ledger-700 dark:border-ledger-800 dark:bg-ledger-500/10 dark:text-ledger-400">
+          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-ledger-500" />
+          Running now: <span className="font-medium">{runningSource.name}</span>
+          {runningSource.lastRun && <> &mdash; started {timeAgo(runningSource.lastRun.startedAt)}.</>}
+        </div>
+      )}
 
       <section>
         <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">Sources</h2>
         <div className="grid gap-3 sm:grid-cols-1">
-          <SourceCard source={status.sources[0]} command="npm run ingest:orange-book" pipeline="orange_book" />
-          <SourceCard source={status.sources[1]} command="npm run ingest:purple-book" pipeline="purple_book" />
-          <SourceCard source={status.sources[2]} command="npm run ingest:paragraph-iv" pipeline="paragraph_iv" />
+          <SourceCard
+            source={status.sources[0]}
+            command="npm run ingest:orange-book"
+            pipeline="orange_book"
+            blockedByOtherRun={anyFastRunning}
+          />
+          <SourceCard
+            source={status.sources[1]}
+            command="npm run ingest:purple-book"
+            pipeline="purple_book"
+            blockedByOtherRun={anyFastRunning}
+          />
+          <SourceCard
+            source={status.sources[2]}
+            command="npm run ingest:paragraph-iv"
+            pipeline="paragraph_iv"
+            blockedByOtherRun={anyFastRunning}
+          />
         </div>
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">Federal litigation tracking</h2>
+        <div className="grid gap-3 sm:grid-cols-1">
+          <SourceCard source={status.sources[4]} command="npm run ingest:litigation" pipeline="litigation" />
+        </div>
+        <p className="mt-2 text-xs text-paper-500 dark:text-paper-400">
+          Checks CourtListener for Hatch-Waxman litigation involving companies with an existing Paragraph
+          IV filing, a batch of 25 at a time. Bound by CourtListener&rsquo;s free-tier rate limit (5
+          requests/minute, 125/day) &mdash; deliberately kept out of &ldquo;Refresh all&rdquo; so one click
+          can&rsquo;t silently burn the day&rsquo;s quota. A full pass over every candidate takes several runs;
+          re-running just picks up the companies checked longest ago.
+        </p>
       </section>
 
       <section>
@@ -82,6 +132,11 @@ export default async function DataPage() {
             </code>
             picks up exactly where it left off. Last write: {timeAgo(enrichment.lastActivityAt)}.
           </p>
+          {status.sources[3].lastRun?.status === "FAILED" && (
+            <p className="mb-3 rounded bg-rust-50 px-2 py-1.5 text-xs text-rust-700 dark:bg-rust-500/10 dark:text-rust-400">
+              {errorMessageOf(status.sources[3].lastRun?.summary)}
+            </p>
+          )}
           <div className="flex flex-col gap-3">
             <ProgressBar label="Overall" done={enrichment.enrichedPatents} total={enrichment.totalPatents} />
             <ProgressBar label="Orange Book patents" done={enrichment.orangeBookEnriched} total={enrichment.orangeBookTotal} />

@@ -33,7 +33,24 @@
 // future regression should be re-validated the same way against a fresh
 // download, not assumed away.
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { WorkerMessageHandler } from "pdfjs-dist/legacy/build/pdf.worker.mjs";
 import type { DecisionHistoryEntry, ParsedChallenge, ParseResult, PivDecisionStatus, RowIssue } from "./types";
+
+// pdfjs-dist's Node "fake worker" resolves via a runtime `import("./pdf.worker.mjs")`
+// relative to its own package directory — fine running this file directly (tsx),
+// but under Next's bundler the module executes from a chunk file inside .next/,
+// so that relative path resolves nowhere and every parse fails with "Setting up
+// fake worker failed: Cannot find module '.../pdf.worker.mjs'". Pointing
+// GlobalWorkerOptions.workerSrc at an absolute on-disk path looks like a fix but
+// isn't reliable here: Turbopack can give the route chunk and the worker chunk
+// separately-bundled copies of pdf.mjs, each with its own GlobalWorkerOptions
+// class/static state, so a value set on one copy is invisible to the other.
+// Importing WorkerMessageHandler statically (bundler-resolved at build time, no
+// runtime import() involved) and handing it to pdfjs via the documented
+// `globalThis.pdfjsWorker` escape hatch skips that dynamic import entirely.
+(globalThis as typeof globalThis & { pdfjsWorker?: { WorkerMessageHandler: typeof WorkerMessageHandler } }).pdfjsWorker = {
+  WorkerMessageHandler,
+};
 
 export const COLUMN_KEYS = [
   "activeIngredient",

@@ -5,7 +5,7 @@ import { unauthorizedResponse, forbiddenResponse, validationErrorResponse, confl
 import { triggerPipeline, triggerAll, type PipelineKey } from "@/lib/ingestion/orchestrator";
 
 const TriggerBodySchema = z.object({
-  pipeline: z.enum(["orange_book", "purple_book", "paragraph_iv", "pta", "all"]),
+  pipeline: z.enum(["orange_book", "purple_book", "paragraph_iv", "pta", "litigation", "all"]),
 });
 
 // Analyst-only, enforced here (not just hidden in the /data UI) — a route

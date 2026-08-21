@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export type TriggerPipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta" | "all";
+export type TriggerPipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta" | "litigation" | "all";
 
 // POSTs to the Analyst-only /api/data/ingest route and asks the page to
 // re-fetch immediately on success, rather than waiting for AutoRefresh's

@@ -14,6 +14,33 @@ function formatDateTime(d: Date | null): string {
   return d.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
 }
 
+interface IssueCategory {
+  reason: string;
+  count: number;
+}
+
+// Every pipeline's IngestionRunSummary sets `errorMessage` on FAILED and
+// `totalIssues`/`issueCategories` on PARTIAL, but each pipeline's summary
+// type otherwise differs (PTA's has no issueCategories at all — see
+// src/lib/ingestion/pta/index.ts) — so this reads defensively out of the
+// loosely-typed Json blob rather than assuming one shared shape.
+function summaryDetail(summary: unknown): { errorMessage: string | null; totalIssues: number | null; topIssue: IssueCategory | null } {
+  if (!summary || typeof summary !== "object") return { errorMessage: null, totalIssues: null, topIssue: null };
+  const s = summary as Record<string, unknown>;
+  let errorMessage = typeof s.errorMessage === "string" ? s.errorMessage : null;
+  // Litigation's mid-run auth-abort path (see litigation/index.ts) sets
+  // abortedOnAuthError in the stored summary but no errorMessage string —
+  // the message only lived on the in-memory return value, never written
+  // to the DB row this page reads.
+  if (!errorMessage && s.abortedOnAuthError === true) {
+    errorMessage = "Aborted after an auth error — check COURTLISTENER_API_KEY.";
+  }
+  const totalIssues = typeof s.totalIssues === "number" ? s.totalIssues : null;
+  const categories = Array.isArray(s.issueCategories) ? (s.issueCategories as IssueCategory[]) : null;
+  const topIssue = categories && categories.length > 0 ? categories[0] : null;
+  return { errorMessage, totalIssues, topIssue };
+}
+
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={clsx("inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset", STATUS_STYLES[status] ?? STATUS_STYLES.FAILED)}>
@@ -26,12 +53,20 @@ export function SourceCard({
   source,
   command,
   pipeline,
+  blockedByOtherRun,
 }: {
   source: DataSourceStatus;
   command: string;
   pipeline?: TriggerPipelineKey;
+  // True while a *different* pipeline this one shares a concurrency
+  // reservation with (see orchestrator.ts's PIPELINE_ORDER) is running —
+  // e.g. all three "Refresh all" pipelines while any one of them is
+  // mid-run. Without this, that button looked clickable and would 409.
+  blockedByOtherRun?: boolean;
 }) {
   const run = source.lastRun;
+  const isRunning = run?.status === "RUNNING";
+  const { errorMessage, totalIssues, topIssue } = summaryDetail(run?.summary);
   return (
     <div className="rounded-lg border border-paper-200 bg-paper-100 p-4 dark:border-paper-800 dark:bg-paper-950">
       <div className="flex items-start justify-between gap-2">
@@ -39,16 +74,36 @@ export function SourceCard({
           <h3 className="text-sm font-semibold text-paper-900 dark:text-paper-50">{source.name}</h3>
           {run && <StatusBadge status={run.status} />}
         </div>
-        {pipeline && <TriggerButton pipeline={pipeline} disabled={run?.status === "RUNNING"} label="Run now" />}
+        {pipeline && (
+          <TriggerButton pipeline={pipeline} disabled={isRunning || Boolean(blockedByOtherRun)} label="Run now" />
+        )}
       </div>
       {!run ? (
         <p className="mt-2 text-sm text-paper-500 dark:text-paper-400">Never run yet.</p>
       ) : (
         <>
           <p className="mt-2 text-xs text-paper-500 dark:text-paper-400">
-            Last run {formatDateTime(run.startedAt)}
-            {run.finishedAt && <> &middot; finished {formatDateTime(run.finishedAt)}</>}
+            {isRunning ? (
+              <span className="font-medium text-ledger-700 dark:text-ledger-400">Running since {formatDateTime(run.startedAt)}&hellip;</span>
+            ) : (
+              <>
+                Last run {formatDateTime(run.startedAt)}
+                {run.finishedAt && <> &middot; finished {formatDateTime(run.finishedAt)}</>}
+              </>
+            )}
           </p>
+          {errorMessage && (
+            <p className="mt-2 rounded bg-rust-50 px-2 py-1.5 text-xs text-rust-700 dark:bg-rust-500/10 dark:text-rust-400">
+              {errorMessage}
+            </p>
+          )}
+          {!errorMessage && totalIssues != null && totalIssues > 0 && (
+            <p className="mt-2 rounded bg-flag-50 px-2 py-1.5 text-xs text-flag-700 dark:bg-flag-500/10 dark:text-flag-400">
+              {totalIssues.toLocaleString()} data-quality note{totalIssues === 1 ? "" : "s"} on this run
+              {topIssue && <> &mdash; most common: {topIssue.reason} ({topIssue.count.toLocaleString()}&times;)</>}
+              {run.status === "PARTIAL" && ". The run itself completed and the data was written; these are per-row footnotes, not a stalled or broken run."}
+            </p>
+          )}
           <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
             <div>
               <dt className="text-paper-400">Products</dt>
