@@ -42,6 +42,7 @@ describe("buildOpenApiDocument", () => {
       "minPtaGapDays",
       "hasGenericChallenge",
       "hasFirstCommercialMarketingDate",
+      "hasLitigation",
       "sort",
       "limit",
       "offset",

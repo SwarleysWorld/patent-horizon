@@ -13,6 +13,7 @@
     "ingest:orange-book": "tsx scripts/ingest-orange-book.ts",
     "ingest:purple-book": "tsx scripts/ingest-purple-book.ts",
     "ingest:paragraph-iv": "tsx scripts/ingest-paragraph-iv.ts",
+    "ingest:litigation": "tsx scripts/ingest-litigation.ts",
     "enrich:pta": "tsx scripts/enrich-pta.ts",
     "classify:drugs": "tsx scripts/classify-drugs.ts",
     "refresh:data": "tsx scripts/refresh-data.ts",

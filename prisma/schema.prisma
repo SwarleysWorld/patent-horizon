@@ -78,6 +78,18 @@ model Company {
 
   drugs            Drug[]
   biologicProducts BiologicProduct[]
+
+  // Stamped after every litigation-pipeline check of this company (found
+  // or not) — see src/lib/ingestion/litigation/index.ts. Null = never
+  // checked. Powers resumable batching across the CourtListener API's
+  // hard rate limit (5 req/min, 125/day) without touching
+  // IngestionRecord's exactly-one-parent CHECK constraint.
+  litigationLastCheckedAt DateTime?
+
+  litigationCasesAsPlaintiff LitigationCase[] @relation("LitigationPlaintiff")
+  litigationCasesAsDefendant LitigationCase[] @relation("LitigationDefendant")
+
+  @@index([litigationLastCheckedAt])
 }
 
 // One approved drug PRODUCT: a specific brand/generic name + dosage form +
@@ -122,6 +134,7 @@ model Drug {
   ingestionRecords IngestionRecord[]
   challengeLinks   GenericChallengeDrug[]
   watchlistItems   WatchlistItem[]
+  litigationLinks  LitigationCaseDrug[]
 
   @@unique([applicationNumber, productNumber])
   @@index([brandName])
@@ -464,6 +477,157 @@ model GenericChallengeDrug {
   @@index([drugId])
 }
 
+// Which of the two districts this pipeline is scoped to. A real, closed
+// enum even though CourtListener's own court_id vocabulary is large and
+// open globally — we constrain every search to exactly these two courts
+// at the query layer (src/lib/ingestion/litigation/client.ts always
+// requests court=deld,njd), so ingestion itself can never legitimately
+// produce a third value; LitigationDocket.courtRaw keeps CourtListener's
+// own court_id string verbatim for traceability regardless.
+enum LitigationCourt {
+  DE
+  NJ
+}
+
+// Our own inferred classification of how a dispute concluded — a small,
+// closed taxonomy we define (like PivDecisionStatus), not an open
+// vocabulary ingested verbatim from an external source (unlike
+// Exclusivity.code). ONGOING/UNCLEAR are the only values the v1 pipeline
+// can derive (from a docket's dateTerminated alone) — the rest exist for
+// a possible future enrichment pass that reads docket-entry text, and are
+// never guessed into without that corroborating evidence.
+enum LitigationOutcome {
+  ONGOING
+  SETTLED
+  DISMISSED
+  RULING_FOR_PLAINTIFF
+  RULING_FOR_DEFENDANT
+  TRANSFERRED
+  UNCLEAR
+}
+
+// How confident the automated company/product matching is that a
+// CourtListener docket hit is (a) genuinely Hatch-Waxman/ANDA litigation
+// and (b) correctly attributed to a specific company pair and product —
+// see src/lib/ingestion/litigation/match.ts's scoreConfidence(). This is
+// deliberately a weaker-confidence signal than every other source in this
+// schema (Orange Book/Purple Book/PTA/Paragraph IV all link via exact
+// NDA/RLD/patent-number fields); the UI must never present it with the
+// same visual certainty as those.
+enum LitigationMatchConfidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+// One Hatch-Waxman/ANDA litigation DISPUTE, which can span multiple real
+// court dockets (see LitigationDocket below): a single dispute commonly
+// splits into several associated case numbers within one district, and a
+// case can transfer between districts mid-dispute (each docket keeps its
+// own court, so a transfer is just two docket rows under one case, not a
+// mutation of one row). Grouping dockets into one LitigationCase is
+// itself a best-effort heuristic (normalized party-pair match + filing-
+// date proximity — see findOrCreateLitigationCase in
+// src/lib/ingestion/litigation/load.ts), same spirit as
+// paragraphIV/load.ts's tokenOverlap dosage-form matching: useful, not
+// guaranteed-correct clustering.
+//
+// plaintiffCompanyId/defendantCompanyId are two INDEPENDENTLY nullable
+// FKs to the same model (Company), not an either/or pair — a different
+// shape from Patent/Exclusivity/WatchlistItem's drugId-XOR-
+// biologicProductId pattern, so no CHECK constraint applies here.
+// *NameRaw always holds the source's own case-caption-derived string,
+// even when a Company match succeeds, so the original text is never lost.
+model LitigationCase {
+  id String @id @default(cuid())
+
+  plaintiffCompanyId String?
+  plaintiffCompany   Company? @relation("LitigationPlaintiff", fields: [plaintiffCompanyId], references: [id])
+  plaintiffNameRaw   String // as split from CourtListener's caseName, e.g. "Vanda Pharmaceuticals Inc."
+
+  defendantCompanyId String?
+  defendantCompany   Company? @relation("LitigationDefendant", fields: [defendantCompanyId], references: [id])
+  defendantNameRaw   String
+
+  // Derived from dockets[].filingDate (earliest) on every load — not
+  // independently editable, so it stays in sync with the child rows.
+  earliestFilingDate DateTime?
+
+  // Derived — see deriveCaseOutcome() in match.ts. Never set directly
+  // from search-hit text.
+  outcome     LitigationOutcome @default(ONGOING)
+  outcomeNote String? // explanation of how `outcome` was derived, shown next to the outcome badge in the UI
+
+  matchConfidence LitigationMatchConfidence
+  matchNote       String? // human-readable "why this tier" explanation — see match.ts scoreConfidence(); always rendered in the UI, not hidden behind a tooltip
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dockets          LitigationDocket[]
+  drugLinks        LitigationCaseDrug[]
+  ingestionRecords IngestionRecord[]
+
+  @@index([plaintiffCompanyId])
+  @@index([defendantCompanyId])
+  @@index([outcome])
+}
+
+// One row per actual CourtListener RECAP docket — the thing that really
+// has a case number, a specific court, and a specific judge. Multiple
+// rows can belong to one LitigationCase (multi-docket dispute; also how a
+// district transfer is represented — pre- and post-transfer dockets are
+// two separate rows here, each with its own court).
+model LitigationDocket {
+  id               String         @id @default(cuid())
+  litigationCaseId String
+  litigationCase   LitigationCase @relation(fields: [litigationCaseId], references: [id], onDelete: Cascade)
+
+  // CourtListener's own numeric docket id (search response's `docket_id`)
+  // — the natural key for idempotent upsert. NOT the same as docketNumber
+  // (the human-readable case number), which isn't guaranteed unique
+  // across courts. Nullable (unlike every other field on this model that
+  // isn't) specifically for manually-entered dockets with no CourtListener
+  // lookup at all (see src/lib/ingestion/manualEntry) — e.g. a case too
+  // recent to be in RECAP yet. Postgres treats every NULL as distinct in
+  // a unique index, so multiple such rows coexist fine.
+  externalDocketId Int? @unique
+
+  docketNumber String // e.g. "1:23-cv-01234", human-readable case number
+
+  court    LitigationCourt
+  courtRaw String // CourtListener's own court_id ("deld" / "njd"), kept verbatim for traceability/debugging
+
+  filingDate     DateTime?
+  dateTerminated DateTime?
+  judge          String? // CourtListener's assignedTo, as-is
+  natureOfSuit   String? // CourtListener's suitNature (e.g. "830 Patent") — open vocabulary, plain string, same reasoning as Exclusivity.code
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([litigationCaseId])
+  @@index([court])
+}
+
+// Many-to-many join between LitigationCase and Drug — same shape as
+// GenericChallengeDrug (genuine M2M, not the nullable-FK/CHECK-constraint
+// pattern), because a dispute's product link is either absent (no
+// confident match) or can span more than one strength/productNumber row
+// under the same NDA.
+model LitigationCaseDrug {
+  id               String         @id @default(cuid())
+  litigationCaseId String
+  litigationCase   LitigationCase @relation(fields: [litigationCaseId], references: [id], onDelete: Cascade)
+  drugId           String
+  drug             Drug           @relation(fields: [drugId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([litigationCaseId, drugId])
+  @@index([drugId])
+}
+
 // A user-curated shortlist — one row per (user, product) they've starred
 // from that product's detail page. Polymorphic across Drug/BiologicProduct
 // (same drugId/biologicProductId-nullable-pair pattern as Patent/
@@ -543,12 +707,13 @@ model IngestionRun {
 // time stay auditable.
 //
 // Exactly one of drugId / patentId / exclusivityId / biologicProductId /
-// genericChallengeId must be set — enforced by a CHECK constraint added by
-// hand in the migration SQL (Prisma's schema language has no first-class
-// check-constraint support yet). If you ever regenerate this migration
-// from scratch, re-add that constraint (now 5-way: originally just
-// drug/patent/exclusivity, extended for BiologicProduct, extended again
-// for GenericChallenge).
+// genericChallengeId / litigationCaseId must be set — enforced by a CHECK
+// constraint added by hand in the migration SQL (Prisma's schema language
+// has no first-class check-constraint support yet). If you ever
+// regenerate this migration from scratch, re-add that constraint (now
+// 6-way: originally just drug/patent/exclusivity, extended for
+// BiologicProduct, extended again for GenericChallenge, extended again
+// for LitigationCase).
 model IngestionRecord {
   id String @id @default(cuid())
 
@@ -570,10 +735,20 @@ model IngestionRecord {
   genericChallengeId String?
   genericChallenge   GenericChallenge? @relation(fields: [genericChallengeId], references: [id], onDelete: Cascade)
 
-  externalRef String? // the source's own id/url for this record, for traceability + dedupe
+  litigationCaseId String?
+  litigationCase   LitigationCase? @relation(fields: [litigationCaseId], references: [id], onDelete: Cascade)
+
+  externalRef String? // the source's own id/url for this record, for traceability + dedupe — holds the triggering CourtListener docket id for litigation records
   verifiedAt  DateTime @default(now())
   changeNote  String? // optional human-readable note of what changed, if anything
   rawPayload  Json? // optional raw snapshot from the source, for debugging ingestion
+
+  // Set only when sourceId points at the "Manual Entry" DataSource — which
+  // Analyst entered or manually verified this record. Plain string, not a
+  // Prisma relation, same reasoning as WatchlistItem.userId: User is
+  // Better-Auth-generated and its own doc comment warns against
+  // hand-editing it, so no back-relation is added here either.
+  enteredByUserId String?
 
   createdAt DateTime @default(now())
 
@@ -582,6 +757,7 @@ model IngestionRecord {
   @@index([exclusivityId, verifiedAt])
   @@index([biologicProductId, verifiedAt])
   @@index([genericChallengeId, verifiedAt])
+  @@index([litigationCaseId, verifiedAt])
   @@index([sourceId, verifiedAt])
 }
 

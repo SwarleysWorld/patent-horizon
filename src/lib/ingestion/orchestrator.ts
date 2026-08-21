@@ -1,0 +1,108 @@
+// The single place that knows about all four ingestion pipelines and owns
+// the "don't start a second concurrent run of the same pipeline" guard.
+// Triggered from src/app/api/data/ingest/route.ts — see that file for the
+// auth/role gate, which is the real security boundary; this module only
+// deals with concurrency and background execution.
+
+import { prisma } from "@/lib/prisma";
+import { runOrangeBookIngestion, ORANGE_BOOK_SOURCE_NAME } from "./orangeBook";
+import { runPurpleBookIngestion, PURPLE_BOOK_SOURCE_NAME } from "./purpleBook";
+import { runParagraphIVIngestion, PARAGRAPH_IV_SOURCE_NAME } from "./paragraphIV";
+import { runPtaEnrichment, PTA_SOURCE_NAME } from "./pta";
+
+export type PipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta";
+
+const PIPELINES: Record<PipelineKey, { sourceName: string; run: () => Promise<{ status: string }> }> = {
+  orange_book: { sourceName: ORANGE_BOOK_SOURCE_NAME, run: () => runOrangeBookIngestion() },
+  purple_book: { sourceName: PURPLE_BOOK_SOURCE_NAME, run: () => runPurpleBookIngestion() },
+  paragraph_iv: { sourceName: PARAGRAPH_IV_SOURCE_NAME, run: () => runParagraphIVIngestion() },
+  pta: { sourceName: PTA_SOURCE_NAME, run: () => runPtaEnrichment() },
+};
+
+export const PIPELINE_ORDER: PipelineKey[] = ["orange_book", "purple_book", "paragraph_iv", "pta"];
+
+// In-memory only — resets on server restart, which is fine: this is the
+// fast/atomic guard against a same-process double-click race (synchronous
+// check-then-add, no `await` between them, so two near-simultaneous
+// requests can't both pass). The DB check below is what survives a
+// restart and catches a crashed process's orphaned RUNNING row.
+const runningInMemory = new Set<PipelineKey>();
+
+// PTA alone can legitimately run for hours (see README) — this threshold
+// is picked so no real run ever gets near it; it only ever fires for a
+// genuinely orphaned row from a crashed process. Checked lazily, at the
+// moment someone next tries to trigger that pipeline — no reaper cron.
+const STALE_RUNNING_THRESHOLD_MS = 6 * 60 * 60 * 1000;
+
+async function isRunning(key: PipelineKey): Promise<boolean> {
+  if (runningInMemory.has(key)) return true;
+
+  const source = await prisma.dataSource.findUnique({ where: { name: PIPELINES[key].sourceName } });
+  if (!source) return false;
+
+  const latest = await prisma.ingestionRun.findFirst({ where: { sourceId: source.id }, orderBy: { startedAt: "desc" } });
+  if (!latest || latest.status !== "RUNNING") return false;
+
+  if (Date.now() - latest.startedAt.getTime() > STALE_RUNNING_THRESHOLD_MS) {
+    await prisma.ingestionRun.update({
+      where: { id: latest.id },
+      data: {
+        status: "FAILED",
+        finishedAt: new Date(),
+        summary: { errorMessage: "Marked stale: still RUNNING after 6h with no completion — likely an orphaned run from a crashed process." },
+      },
+    });
+    return false;
+  }
+
+  return true;
+}
+
+export type TriggerResult = { ok: true } | { ok: false; reason: "already_running"; busy: PipelineKey[] };
+
+export async function triggerPipeline(key: PipelineKey): Promise<TriggerResult> {
+  if (await isRunning(key)) return { ok: false, reason: "already_running", busy: [key] };
+
+  runningInMemory.add(key);
+  // Deliberately not awaited — this is the actual "return before it's
+  // done" boundary the route relies on. Each runXIngestion() already
+  // catches its own errors into a FAILED IngestionRun row; this .catch is
+  // only a last-resort net for something escaping that contract entirely.
+  PIPELINES[key]
+    .run()
+    .catch((error) => console.error(`[orchestrator] ${key} threw unexpectedly:`, error))
+    .finally(() => runningInMemory.delete(key));
+
+  return { ok: true };
+}
+
+export async function triggerAll(): Promise<TriggerResult> {
+  const busy = (await Promise.all(PIPELINE_ORDER.map(async (k) => ((await isRunning(k)) ? k : null)))).filter(
+    (k): k is PipelineKey => k != null,
+  );
+  if (busy.length > 0) return { ok: false, reason: "already_running", busy };
+
+  // Reserve all four atomically (synchronously, before any await inside
+  // the chain below) so an individual trigger can't sneak into pipeline
+  // #2's slot while #1 is still running as part of this chain.
+  for (const k of PIPELINE_ORDER) runningInMemory.add(k);
+
+  (async () => {
+    for (const k of PIPELINE_ORDER) {
+      try {
+        const summary = await PIPELINES[k].run();
+        runningInMemory.delete(k);
+        if (summary.status === "FAILED") break; // mirrors scripts/refresh-data.ts's own stop-on-failure behavior
+      } catch (error) {
+        console.error(`[orchestrator] ${k} threw unexpectedly during "all":`, error);
+        runningInMemory.delete(k);
+        break;
+      }
+    }
+    // Safety net if the loop exited early (break) — release any pipelines
+    // reserved above that never got their own turn to run.
+    for (const k of PIPELINE_ORDER) runningInMemory.delete(k);
+  })();
+
+  return { ok: true };
+}

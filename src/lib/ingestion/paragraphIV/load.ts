@@ -39,7 +39,7 @@ function tokensOverlap(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
-interface DrugMatch {
+export interface DrugMatch {
   drugIds: string[];
   reason: "matched" | "no_nda_number" | "nda_not_found";
   note: string | null;
@@ -54,7 +54,12 @@ interface DrugMatch {
 // — incompatible free-text formats on both sides) and never fall back to
 // brand-name matching when there's no NDA number (too weak a signal to
 // trust silently) — both cases are logged, not guessed.
-async function matchDrugs(challenge: ParsedChallenge): Promise<DrugMatch> {
+//
+// Exported (narrowed to just the two fields this actually reads, rather
+// than the full ParsedChallenge) so src/lib/ingestion/manualEntry can
+// reuse the exact same matching logic for a manually-entered
+// GenericChallenge with an NDA number, instead of duplicating it.
+export async function matchDrugs(challenge: { rldNdaNumber: string | null; dosageForm: string }): Promise<DrugMatch> {
   if (!challenge.rldNdaNumber) {
     return { drugIds: [], reason: "no_nda_number", note: "no RLD/NDA number in source data" };
   }

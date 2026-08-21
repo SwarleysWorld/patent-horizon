@@ -44,6 +44,7 @@ const OTHER_ADVANCED_KEYS = [
   "minPtaGapDays",
   "hasGenericChallenge",
   "hasFirstCommercialMarketingDate",
+  "hasLitigation",
 ] as const;
 
 // Must match EXPORT_ROW_CAP in src/app/api/drugs/export/route.ts — kept
@@ -105,6 +106,7 @@ export function DrugsExplorer({
   const minPtaGapDays = searchParams.get("minPtaGapDays") ?? "";
   const hasGenericChallenge = searchParams.get("hasGenericChallenge") === "true";
   const hasFirstCommercialMarketingDate = searchParams.get("hasFirstCommercialMarketingDate") === "true";
+  const hasLitigation = searchParams.get("hasLitigation") === "true";
 
   function navigate(patch: Record<string, string | null>, resetOffset = true) {
     const params = new URLSearchParams(searchParams.toString());
@@ -444,6 +446,23 @@ export function DrugsExplorer({
                   </label>
                 </div>
               </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-paper-500 dark:text-paper-400">Litigation</label>
+                <div className="flex items-center gap-3 pt-1">
+                  <label
+                    className="flex items-center gap-1.5 text-xs text-paper-700 dark:text-paper-300"
+                    title="Has federal Hatch-Waxman litigation on record (District of Delaware / District of New Jersey, from CourtListener's RECAP archive)"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={hasLitigation}
+                      onChange={(e) => navigate({ hasLitigation: e.target.checked ? "true" : null })}
+                      className="rounded border-paper-300 dark:border-paper-700"
+                    />
+                    Has litigation
+                  </label>
+                </div>
+              </div>
 
               {activeAdvancedCount > 0 && (
                 <button
@@ -526,6 +545,14 @@ export function DrugsExplorer({
                           title="Has a filed FDA Paragraph IV generic-challenge on record"
                         >
                           Challenge
+                        </span>
+                      )}
+                      {row.hasLitigation && (
+                        <span
+                          className="inline-flex items-center rounded bg-rust-50 px-1 py-0.5 text-[10px] font-medium text-rust-700 dark:bg-rust-500/10 dark:text-rust-400"
+                          title="Has federal Hatch-Waxman litigation on record (District of Delaware / District of New Jersey)"
+                        >
+                          Litigation
                         </span>
                       )}
                     </div>

@@ -838,6 +838,141 @@ npm run enrich:pta -- --limit 20            # process only the next 20 (prioriti
 npm run enrich:pta -- --patent 6967208,8722693   # enrich specific patent numbers only
 ```
 
+## Data ingestion: Federal Litigation Tracking
+
+`npm run ingest:litigation` tracks federal Hatch-Waxman/ANDA patent
+litigation — the actual lawsuits a Paragraph IV certification triggers —
+sourced from [CourtListener's](https://www.courtlistener.com/) free RECAP
+API, scoped to the District of Delaware and District of New Jersey (the two
+districts the large majority of this litigation is filed in). This is a
+different kind of source from the other three: it's the first pipeline in
+this app that calls a live, rate-limited REST API as its primary data
+source (rather than downloading one file), and the only one that links to
+a product by company-name matching instead of an exact ID field. Both of
+those facts shape the whole design below.
+
+### The source and its rate limit — the dominant design constraint
+
+CourtListener's API v4 (`api/rest/v4/search/?type=r`) is free with a
+signup-only account token, but the free tier caps out at **5 requests/min,
+50/hour, 125/day** — a rolling window, no bulk-download alternative for
+RECAP docket data. Confirmed live (unauthenticated test call) that a
+company-name search like `?q=teva&court=deld,njd` returns real docket hits
+in one request, each already carrying a `caseName` field
+("WYETH v. TEVA PHARMACEUTICALS") — this is enough to get both party names
+for free, without a second call to the separate `/parties/` endpoint, which
+keeps the pipeline to roughly **one request per company searched**. The
+response mixes camelCase and snake_case field names inconsistently
+(`caseName`, `docketNumber`, `dateFiled` alongside `docket_id`,
+`court_id`) — that's the source's own shape, confirmed directly rather than
+assumed from the docs, which didn't fully describe it.
+
+Search scope is deliberately not "every company in the database" — it's
+companies that already hold at least one NDA with a linked
+`GenericChallenge` (386 of 2,254 total companies, as of the schema this
+was built against). Hatch-Waxman litigation is triggered by a Paragraph IV
+certification, so a real match should almost always correlate with an
+existing challenge; searching the other ~1,900 companies would mostly
+burn budget on drugs that were never challenged in the first place.
+
+At 5 req/min, a run's batch size (default 25 companies) takes several
+minutes; a full first pass over all 386 candidate companies takes on the
+order of a dozen-plus runs. This is not run as part of `npm run
+refresh:data` for the same reason PTA enrichment isn't — it's
+rate-limit-bound over multiple runs by construction, not a single-shot
+refresh.
+
+### How it's resumable
+
+`Company.litigationLastCheckedAt` (nullable, `null` = never checked) is
+stamped after every company is searched — found or not — so a batch
+naturally picks up the oldest/never-checked companies first on every run,
+with a 90-day staleness window before a company becomes eligible to be
+re-checked (new litigation can appear later). A request-level failure
+(not an auth error) deliberately does **not** stamp the timestamp, so that
+company stays eligible for immediate retry on the next run rather than
+waiting out the staleness window. A 401/403 aborts the whole run
+immediately (verified live: an empty API key token fails in well under a
+second) rather than burning through the remaining candidate list on a key
+that won't fix itself between companies.
+
+### Linking to a product: company-name matching, honestly lower-confidence than everything else
+
+Every other source in this app links to a product via an exact ID field —
+NDA/RLD number, patent number. Litigation can't: CourtListener's docket
+metadata doesn't carry NDA numbers, only party names as free text pulled
+from a case caption. `src/lib/ingestion/litigation/match.ts` normalizes
+both sides (lowercases, strips corporate suffixes like Inc/Corp/LLC/Pharma)
+and matches against a `Company.name` map precomputed once per run — exact
+match first, a stricter-than-`paragraphIV`'s-dosage-form-matching
+"all-tokens-of-the-shorter-name-contained" fuzzy fallback second, and
+**never guesses among ties** on either path.
+
+A three-tier `LitigationMatchConfidence` (`HIGH`/`MEDIUM`/`LOW`) is stored
+per case, with a `matchNote` explaining *why* — both are always rendered in
+the UI (`src/components/drugs/LitigationCallout.tsx`), never hidden behind
+a tooltip, and `LOW` renders with a dashed outline instead of a filled
+badge specifically so it visually reads as less certain than the confirmed/
+pending-verification badges used everywhere else on the page. `HIGH`
+requires an exact match on both parties, a nature-of-suit or cause field
+that actually indicates a patent case (checked against federal Nature-of-
+Suit code 830 and the `cause` field's own statute citations, e.g. "35:271
+Patent Infringement" — confirmed live that plenty of noise unrelated to
+patents shows up in a plain company-name search: ERISA, employment,
+product-liability suits all surfaced in a real "teva" test query), and
+exactly one plausible product to attach to. Anything less specific is
+`MEDIUM` or `LOW`, never silently upgraded.
+
+### Multi-docket disputes and district transfers
+
+A single real dispute can span several case numbers (confirmed real
+pattern: one dispute split into three associated Delaware dockets) and a
+case can transfer between districts mid-dispute. Modeled as two levels:
+`LitigationCase` is the dispute (parties, confidence, derived outcome),
+`LitigationDocket` is one row per actual CourtListener docket (its own
+case number, court, judge, filing/termination dates) — a transfer is just
+two docket rows under one case, each with its own court, not a mutation of
+one row. Grouping new hits into an existing case
+(`findOrCreateLitigationCase` in `src/lib/ingestion/litigation/load.ts`) is
+itself a best-effort heuristic — same normalized party pair, filing dates
+within a 180-day window — and can under- or over-group in real edge cases
+(e.g. two genuinely unrelated disputes between the same two companies a
+few months apart would incorrectly merge), same honesty register as
+`paragraphIV/load.ts`'s own fuzzy dosage-form matching.
+
+### Outcome: `ONGOING`/`UNCLEAR` only in this pass, by design
+
+A case's `outcome` is derived only from data already fetched in the search
+hit — `ONGOING` if any linked docket has no termination date, `UNCLEAR`
+otherwise, each with an `outcomeNote` explaining why. Distinguishing
+`SETTLED`/`DISMISSED`/`RULING_FOR_PLAINTIFF`/`RULING_FOR_DEFENDANT`/
+`TRANSFERRED` needs docket-entry text ("STIPULATION OF DISMISSAL" and
+similar filing-type labels), which costs a request per attempt from the
+same 5/min budget the company-search pass already needs — deliberately cut
+from this pass rather than shipped as a half-working "sometimes guesses"
+feature; the enum already has room for it if a future pass adds that
+lookup. Relatedly: **no "entry date implied by litigation outcome" feature
+exists**, and none is planned to be inferred automatically — RECAP docket
+entries essentially never state a specific launch date in structured form
+(that's almost always in a confidential settlement agreement, not the
+public docket), so litigation outcome is shown on a product page as its
+own qualitative fact, never as a new computed date signal layered onto
+`GenericEntryCallout`'s existing hero logic.
+
+### Setup
+
+Sign up free at [courtlistener.com](https://www.courtlistener.com/) →
+Profile → API, then set `COURTLISTENER_API_KEY` in `.env`. Without a key
+set, `npm run ingest:litigation` fails soft into a `FAILED` `IngestionRun`
+with a clear message, same pattern as PTA enrichment's missing-key
+handling — it never throws.
+
+```bash
+npm run ingest:litigation                    # next batch of 25 oldest/never-checked companies
+npm run ingest:litigation -- --limit 5       # a smaller, budget-conscious batch
+npm run ingest:litigation -- --company-id cabc123 --company-id cdef456   # targeted re-check
+```
+
 ## API
 
 The product surface: "show me patents expiring soon, so I can act on generic

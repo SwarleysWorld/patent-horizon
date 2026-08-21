@@ -47,19 +47,41 @@ function submissionDateLabel(c: Challenge): string {
   return c.submissionDate ? formatDate(c.submissionDate) : "Unknown";
 }
 
-function ChallengeCard({ challenge, computedEstimateDate }: { challenge: Challenge; computedEstimateDate: string | null }) {
-  const diverges =
-    challenge.dateOfFirstCommercialMarketing != null &&
-    computedEstimateDate != null &&
-    challenge.dateOfFirstCommercialMarketing < computedEstimateDate;
+// Real, verifiable differentiator pulled straight from the data — added so
+// that when a drug has more than one challenge record (e.g. Sprycel's two
+// Non-Forfeiture filings that share a marketing date), a reader isn't left
+// wondering why there are two near-identical-looking cards. Confirmed these
+// aren't duplicates: different strength, submission date, first-applicant-
+// approval date, and decision history per record — explaining beats
+// collapsing them into one.
+function differentiatorSentence(challenges: Challenge[]): string | null {
+  const strengths = challenges.map((c) => c.strength).filter((s): s is string => !!s);
+  const uniqueStrengths = [...new Set(strengths)];
+  if (uniqueStrengths.length === challenges.length && uniqueStrengths.length > 1) {
+    return `This drug has ${challenges.length} separate generic-challenge filings on record — each covers a different strength: ${uniqueStrengths.join(" vs. ")}.`;
+  }
+  return `This drug has ${challenges.length} separate generic-challenge filings on record — see each card below for how they differ.`;
+}
 
+function ChallengeCard({ challenge }: { challenge: Challenge }) {
   return (
     <div className="rounded-lg border border-paper-200 p-4 dark:border-paper-800">
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={challenge.currentStatus} />
+        {challenge.strength && (
+          <span className="text-sm font-medium text-paper-800 dark:text-paper-200">{challenge.strength}</span>
+        )}
         <span className="text-xs text-paper-500 dark:text-paper-400">
           First PIV submission: {submissionDateLabel(challenge)}
         </span>
+        {challenge.manuallyEntered && (
+          <span
+            className="rounded bg-ledger-50 px-1.5 py-0.5 text-[10px] font-medium text-ledger-700 dark:bg-ledger-500/10 dark:text-ledger-400"
+            title="Entered manually by an Analyst, not from FDA's automated Paragraph IV list — see /data's audit log"
+          >
+            Manual
+          </span>
+        )}
       </div>
 
       <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
@@ -92,34 +114,24 @@ function ChallengeCard({ challenge, computedEstimateDate }: { challenge: Challen
           </div>
         )}
       </dl>
-
-      {diverges && (
-        <p className="mt-3 rounded-md bg-flag-50 px-3 py-2 text-xs font-medium text-flag-800 ring-1 ring-inset ring-flag-600/20 dark:bg-flag-500/10 dark:text-flag-400 dark:ring-flag-500/20">
-          Generic entry occurred before the computed expiry date — a generic began commercial marketing on{" "}
-          {formatDate(challenge.dateOfFirstCommercialMarketing!)}, earlier than this drug&apos;s computed estimate above.
-        </p>
-      )}
     </div>
   );
 }
 
-export function GenericChallengeCallout({
-  challenges,
-  computedEstimateDate,
-}: {
-  challenges: DrugDetail["genericChallenges"];
-  computedEstimateDate: string | null;
-}) {
+export function GenericChallengeCallout({ challenges }: { challenges: DrugDetail["genericChallenges"] }) {
   if (challenges.length === 0) return null;
 
   return (
-    <section>
+    <section id="generic-challenges">
       <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">
         Generic challenge <span className="font-normal text-paper-400">(FDA Paragraph IV Certifications List)</span>
       </h2>
+      {challenges.length > 1 && (
+        <p className="mb-3 text-sm text-paper-600 dark:text-paper-400">{differentiatorSentence(challenges)}</p>
+      )}
       <div className="flex flex-col gap-3">
         {challenges.map((c) => (
-          <ChallengeCard key={c.id} challenge={c} computedEstimateDate={computedEstimateDate} />
+          <ChallengeCard key={c.id} challenge={c} />
         ))}
       </div>
       <p className="mt-2 text-xs text-paper-400 dark:text-paper-600">

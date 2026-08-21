@@ -84,7 +84,7 @@ export default async function BiologicDetailPage({ params }: { params: Promise<{
         )}
       </div>
 
-      <GenericEntryCallout estimate={biologic.genericEntryEstimate} />
+      <GenericEntryCallout estimate={biologic.genericEntryEstimate} challenges={[]} />
 
       <section>
         <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">

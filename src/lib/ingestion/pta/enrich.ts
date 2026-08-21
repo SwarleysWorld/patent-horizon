@@ -1,39 +1,15 @@
 import { prisma } from "@/lib/prisma";
 import type { UsptoOdpClient } from "./client";
+import {
+  daysBetween,
+  isStandardUtilityPatentNumber,
+  computeStandardEffectiveExpiry,
+  computeNonStandardEffectiveExpiry,
+  STATUTORY_TERM_YEARS,
+} from "./computeExpiry";
 
 export const PTA_SOURCE_NAME = "USPTO Patent Term Adjustment (ODP)";
 const PTA_SOURCE_URL = "https://data.uspto.gov/apis/patent-file-wrapper/patent-term-adjustment";
-
-const MS_PER_DAY = 86_400_000;
-const STATUTORY_TERM_YEARS = 20;
-
-// UTC-based arithmetic throughout — not `.setDate()`/`.setFullYear()`,
-// which read and write the LOCAL calendar date of a Date object. USPTO's
-// filingDate ("2001-11-01") parses as UTC midnight (bare ISO date strings
-// always do), so mutating it with local-time setters silently shifts the
-// result by a day in any timezone west of UTC — caught live: a patent with
-// 0 days of PTA adjustment computed an effective date one day EARLIER than
-// its own filing date + 20 years, in this server's UTC-6 timezone. Same
-// class of bug as the two already fixed in the Purple Book date parser
-// (see README's "Notes for future sessions").
-function addDays(date: Date, days: number): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
-}
-
-function daysBetween(a: Date, b: Date): number {
-  return Math.round((b.getTime() - a.getTime()) / MS_PER_DAY);
-}
-
-// Reissue (and any other non-plain-numeric) patent numbers inherit the
-// remaining term of the original patent they reissued from — "filing date
-// + 20 years" does not apply to them the way it does for a standard
-// utility patent. We can't safely recompute a statutory baseline for these
-// without also resolving the original patent's term, so for these we apply
-// USPTO's PTA figure as a delta on top of whatever nominal expiry we
-// already have, rather than recomputing from scratch.
-function isStandardUtilityPatentNumber(patentNumber: string): boolean {
-  return /^[0-9]+$/.test(patentNumber);
-}
 
 // drugId/biologicProductId are both nullable and mutually exclusive
 // (enforced by Patent_single_parent_check) — this function enriches by
@@ -132,15 +108,12 @@ export async function enrichOnePatent(
   let effectiveExpiryDate: Date;
   let basis: string;
   if (standard) {
-    const statutoryNominal = new Date(
-      Date.UTC(filingDate.getUTCFullYear() + STATUTORY_TERM_YEARS, filingDate.getUTCMonth(), filingDate.getUTCDate()),
-    );
-    effectiveExpiryDate = addDays(statutoryNominal, ptaDays);
+    effectiveExpiryDate = computeStandardEffectiveExpiry(filingDate, ptaDays);
     basis = `filingDate(${result.filingDate}) + ${STATUTORY_TERM_YEARS}y + ${ptaDays}d PTA`;
   } else {
     // Reissue/non-standard: delta on top of the existing (Orange
     // Book-derived) nominal, since we can't recompute a statutory baseline.
-    effectiveExpiryDate = addDays(patent.nominalExpiryDate, ptaDays);
+    effectiveExpiryDate = computeNonStandardEffectiveExpiry(patent.nominalExpiryDate, ptaDays);
     basis = `non-standard patent number — applied ${ptaDays}d PTA as delta to existing nominalExpiryDate rather than recomputing from filing date`;
   }
 

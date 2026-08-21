@@ -26,6 +26,14 @@ export function ExclusivitiesTable({ exclusivities }: { exclusivities: DrugDetai
                 <span className="rounded bg-paper-100 px-1.5 py-0.5 font-mono text-xs font-medium text-paper-700 dark:bg-paper-800 dark:text-paper-300">
                   {e.code}
                 </span>
+                {e.manuallyEntered && (
+                  <span
+                    className="ml-2 rounded bg-ledger-50 px-1 py-0.5 text-[10px] font-sans font-medium text-ledger-700 dark:bg-ledger-500/10 dark:text-ledger-400"
+                    title="Entered manually by an Analyst, not from an automated pipeline — see /data's audit log"
+                  >
+                    Manual
+                  </span>
+                )}
               </td>
               <td className="py-2.5 pr-4 text-paper-600 dark:text-paper-400">
                 {e.description ?? <span className="text-paper-300 dark:text-paper-700">—</span>}

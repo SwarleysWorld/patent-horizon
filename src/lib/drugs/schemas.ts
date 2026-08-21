@@ -88,6 +88,8 @@ export const ListDrugsQuerySchema = z.object({
   hasGenericChallenge: z.literal("true").optional(),
   /** Presence-only filter (`?hasFirstCommercialMarketingDate=true`) — omit for no filter. Requires a real Date of First Commercial Marketing on file from a linked generic-challenge filing — i.e. a generic has actually entered the market, independent of whether FDA made a 180-day decision. */
   hasFirstCommercialMarketingDate: z.literal("true").optional(),
+  /** Presence-only filter (`?hasLitigation=true`) — omit for no filter. Requires at least one linked federal Hatch-Waxman/ANDA litigation case from CourtListener's RECAP archive (District of Delaware / District of New Jersey only). Orange Book only — see `LitigationCaseSchema`. */
+  hasLitigation: z.literal("true").optional(),
   sort: z.enum(["entry_asc", "entry_desc", "pta_gap_desc"]).default("entry_asc"),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
@@ -127,6 +129,8 @@ export const PatentSchema = z.object({
   expiryAdjustmentDays: z.number().int().nullable(),
   submittedDate: z.iso.date().nullable(),
   delistedAt: z.iso.date().nullable(),
+  /** True when this row's most recent IngestionRecord is from the "Manual Entry" source, not an automated pipeline — see src/lib/ingestion/manualEntry. */
+  manuallyEntered: z.boolean(),
 });
 
 export const ExclusivitySchema = z.object({
@@ -135,6 +139,8 @@ export const ExclusivitySchema = z.object({
   description: z.string().nullable(),
   grantedDate: z.iso.date().nullable(),
   expirationDate: z.iso.date(),
+  /** Same provenance flag as PatentSchema.manuallyEntered. */
+  manuallyEntered: z.boolean(),
 });
 
 // The product's whole reason to exist: the best current estimate of when a
@@ -205,6 +211,8 @@ export const SearchResultSchema = z.object({
   maxPtaGapDays: z.number().int().nullable(),
   /** Whether this drug has at least one linked FDA Paragraph IV generic-challenge filing. Orange Book (small-molecule) results only — see `GenericChallengeSchema`. */
   hasGenericChallenge: z.boolean(),
+  /** Whether this drug has at least one linked federal Hatch-Waxman/ANDA litigation case. Orange Book (small-molecule) results only — see `LitigationCaseSchema`. */
+  hasLitigation: z.boolean(),
 });
 
 // ---- Paragraph IV / generic-challenge tracking -------------------------
@@ -245,6 +253,49 @@ export const GenericChallengeSchema = z.object({
    * `genericEntryEstimate.date`.
    */
   expirationOfLastQualifyingPatent: z.iso.date().nullable(),
+  /** Same provenance flag as PatentSchema.manuallyEntered. */
+  manuallyEntered: z.boolean(),
+});
+
+// ---- Federal litigation tracking (CourtListener RECAP) -----------------
+//
+// Deliberately the LOWEST-confidence source on this page. Every other
+// source here (Orange/Purple Book, PTA, Paragraph IV) links to a product
+// via an exact ID field (NDA/RLD/patent number); litigation is linked by
+// company-name matching, a heuristic — matchConfidence and matchNote must
+// always render alongside this data and must never be presented with the
+// same visual certainty as the rest of the page. Scoped to Hatch-Waxman/
+// ANDA litigation in the District of Delaware and District of New Jersey
+// only. See README "Data ingestion: Federal Litigation Tracking" and
+// src/components/drugs/LitigationCallout.tsx.
+export const LitigationDocketSchema = z.object({
+  id: z.string(),
+  docketNumber: z.string(),
+  court: z.enum(["DE", "NJ"]),
+  filingDate: z.iso.date().nullable(),
+  dateTerminated: z.iso.date().nullable(),
+  judge: z.string().nullable(),
+  natureOfSuit: z.string().nullable(),
+});
+
+export const LitigationCaseSchema = z.object({
+  id: z.string(),
+  /** Company.name if the plaintiff resolved to a known company, else the raw case-caption text — see `plaintiffMatched`. */
+  plaintiffName: z.string(),
+  plaintiffMatched: z.boolean(),
+  defendantName: z.string(),
+  defendantMatched: z.boolean(),
+  earliestFilingDate: z.iso.date().nullable(),
+  outcome: z.enum(["ONGOING", "SETTLED", "DISMISSED", "RULING_FOR_PLAINTIFF", "RULING_FOR_DEFENDANT", "TRANSFERRED", "UNCLEAR"]),
+  /** Explains how `outcome` was derived — e.g. why it's UNCLEAR rather than a specific resolution. */
+  outcomeNote: z.string().nullable(),
+  matchConfidence: z.enum(["HIGH", "MEDIUM", "LOW"]),
+  /** Always shown in the UI, not hidden behind a tooltip — the "why" behind `matchConfidence`. */
+  matchNote: z.string().nullable(),
+  /** One dispute can span multiple actual court dockets — see LitigationDocket's Prisma doc comment. */
+  dockets: z.array(LitigationDocketSchema),
+  /** Same provenance flag as PatentSchema.manuallyEntered — set when this dispute was entered/fetched directly by an Analyst rather than the automated RECAP pipeline. */
+  manuallyEntered: z.boolean(),
 });
 
 // ---- Response body: GET /api/drugs/[id] (Orange Book detail) ----------
@@ -262,6 +313,8 @@ export const DrugDetailSchema = z.object({
   genericEntryEstimate: GenericEntryEstimateSchema,
   /** Empty for the overwhelming majority of drugs — see README for real match-rate numbers. Orange Book only; biosimilars use the separate BPCIA patent-dance process already tracked via Purple Book's own patent list. */
   genericChallenges: z.array(GenericChallengeSchema),
+  /** Empty for the overwhelming majority of drugs. Orange Book only — see LitigationCaseSchema's doc comment on confidence. */
+  litigationCases: z.array(LitigationCaseSchema),
 });
 
 // ---- Response body: GET /api/biologics/[id] (Purple Book detail) ------

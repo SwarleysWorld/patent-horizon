@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import type { DataSourceStatus } from "@/lib/ingestion/status";
+import { TriggerButton, type TriggerPipelineKey } from "./TriggerButton";
 
 const STATUS_STYLES: Record<string, string> = {
   SUCCESS: "bg-statute-50 text-statute-700 ring-statute-600/20 dark:bg-statute-500/10 dark:text-statute-400 dark:ring-statute-500/20",
@@ -21,13 +22,24 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-export function SourceCard({ source, command }: { source: DataSourceStatus; command: string }) {
+export function SourceCard({
+  source,
+  command,
+  pipeline,
+}: {
+  source: DataSourceStatus;
+  command: string;
+  pipeline?: TriggerPipelineKey;
+}) {
   const run = source.lastRun;
   return (
     <div className="rounded-lg border border-paper-200 bg-paper-100 p-4 dark:border-paper-800 dark:bg-paper-950">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-paper-900 dark:text-paper-50">{source.name}</h3>
-        {run && <StatusBadge status={run.status} />}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-paper-900 dark:text-paper-50">{source.name}</h3>
+          {run && <StatusBadge status={run.status} />}
+        </div>
+        {pipeline && <TriggerButton pipeline={pipeline} disabled={run?.status === "RUNNING"} label="Run now" />}
       </div>
       {!run ? (
         <p className="mt-2 text-sm text-paper-500 dark:text-paper-400">Never run yet.</p>

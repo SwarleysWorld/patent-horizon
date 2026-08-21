@@ -8,7 +8,7 @@ import { z, type ZodError } from "zod";
 // source of truth as everything else.
 export const ApiErrorSchema = z.object({
   error: z.object({
-    code: z.enum(["VALIDATION_ERROR", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN", "INTERNAL_ERROR"]),
+    code: z.enum(["VALIDATION_ERROR", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "INTERNAL_ERROR"]),
     message: z.string(),
     details: z.array(z.object({ field: z.string(), message: z.string() })).optional(),
   }),
@@ -55,6 +55,13 @@ export function forbiddenResponse(
   return NextResponse.json(
     { error: { code: "FORBIDDEN" as const, message } },
     { status: 403 },
+  );
+}
+
+export function conflictResponse(message: string): NextResponse<ApiErrorBody> {
+  return NextResponse.json(
+    { error: { code: "CONFLICT" as const, message } },
+    { status: 409 },
   );
 }
 

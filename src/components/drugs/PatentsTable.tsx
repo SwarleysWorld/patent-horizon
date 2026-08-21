@@ -70,19 +70,27 @@ export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
 
   return (
     <div className="overflow-x-auto">
-      {hasPending && (
-        <p className="mb-2 px-1 text-xs text-paper-500 dark:text-paper-400">
-          <span className="font-medium text-flag-700 dark:text-flag-400">Pending</span> means this patent&apos;s
-          expiry hasn&apos;t been checked against USPTO records yet — the &quot;Effective expiry&quot; shown is still
-          the source&apos;s own listed date and could move once verified.
-        </p>
-      )}
+      <p className="mb-2 px-1 text-xs text-paper-500 dark:text-paper-400">
+        <span className="font-medium text-paper-600 dark:text-paper-300">DS</span> = covers the drug substance
+        (active ingredient) &nbsp;·&nbsp; <span className="font-medium text-paper-600 dark:text-paper-300">DP</span> =
+        covers the drug product (the formulated product).
+        {hasPending && (
+          <>
+            {" "}
+            <span className="font-medium text-flag-700 dark:text-flag-400">Pending</span> means this patent&apos;s
+            expiry hasn&apos;t been checked against USPTO records yet — the &quot;Effective expiry&quot; shown is
+            still the source&apos;s own listed date and could move once verified.
+          </>
+        )}
+      </p>
       <table className="w-full min-w-[720px] border-collapse text-sm">
         <thead>
           <tr className="border-b border-paper-200 text-left text-xs text-paper-500 dark:border-paper-800 dark:text-paper-400">
             <th className="py-2 pr-4 font-medium">Patent</th>
             <th className="py-2 pr-4 font-medium">Covers</th>
-            <th className="py-2 pr-4 font-medium">Use code</th>
+            <th className="py-2 pr-4 font-medium" title="An FDA-assigned code identifying the specific approved method of use this patent claims — not decoded further here">
+              Use code
+            </th>
             <th className="py-2 pr-4 font-medium">Nominal expiry</th>
             <th className="py-2 pr-4 font-medium">Effective expiry</th>
             <th className="py-2 pr-4 text-right font-medium" title="How many days USPTO's Patent Term Adjustment shifted this patent's expiry, once checked">
@@ -104,6 +112,14 @@ export function PatentsTable({ patents }: { patents: DrugDetail["patents"] }) {
                 {p.delistedAt && (
                   <span className="ml-2 rounded bg-paper-100 px-1 py-0.5 text-[10px] font-sans text-paper-500 dark:bg-paper-800 dark:text-paper-400">
                     Delisted
+                  </span>
+                )}
+                {p.manuallyEntered && (
+                  <span
+                    className="ml-2 rounded bg-ledger-50 px-1 py-0.5 text-[10px] font-sans font-medium text-ledger-700 dark:bg-ledger-500/10 dark:text-ledger-400"
+                    title="Entered manually by an Analyst, not from an automated pipeline — see /data's audit log"
+                  >
+                    Manual
                   </span>
                 )}
               </td>

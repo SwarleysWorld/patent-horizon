@@ -2,8 +2,23 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
 import { MODALITY_LABELS, type Modality } from "@/lib/classification/modality";
 import { DRUG_CLASS_LABELS } from "@/lib/classification/drugClass";
+import { MANUAL_ENTRY_SOURCE_NAME } from "@/lib/ingestion/manualEntry";
 import type { ListDrugsQuery } from "./schemas";
 import type { BiologicDetail, DrugDetail, FilterOptions, GenericEntryEstimate, SearchResult } from "./schemas";
+
+// Latest-record-per-entity include, used to flag a Patent/Exclusivity/
+// GenericChallenge/LitigationCase as manually entered on the detail
+// pages — a record's most recent IngestionRecord.source tells us whether
+// the last thing that touched it was a human, not a pipeline.
+const LATEST_INGESTION_RECORD_SOURCE = {
+  select: { source: { select: { name: true } } },
+  orderBy: { verifiedAt: "desc" as const },
+  take: 1,
+} as const;
+
+function wasManuallyEntered(ingestionRecords: { source: { name: string } }[]): boolean {
+  return ingestionRecords[0]?.source.name === MANUAL_ENTRY_SOURCE_NAME;
+}
 
 const MS_PER_DAY = 86_400_000;
 
@@ -137,7 +152,8 @@ const COMBINED_CTE = Prisma.sql`
       -- need join-and-aggregate, and this avoids adding yet another
       -- multiplying join to the cross product the existing COUNT(DISTINCT)
       -- calls already have to account for.
-      EXISTS (SELECT 1 FROM "GenericChallengeDrug" gcd WHERE gcd."drugId" = d.id) AS has_generic_challenge
+      EXISTS (SELECT 1 FROM "GenericChallengeDrug" gcd WHERE gcd."drugId" = d.id) AS has_generic_challenge,
+      EXISTS (SELECT 1 FROM "LitigationCaseDrug" lcd WHERE lcd."drugId" = d.id) AS has_litigation
     FROM "Drug" d
     JOIN "Company" c ON c.id = d."companyId"
     LEFT JOIN "Patent" p ON p."drugId" = d.id
@@ -167,10 +183,12 @@ const COMBINED_CTE = Prisma.sql`
       COUNT(DISTINCT p.id) AS patent_count,
       COUNT(DISTINCT e.id) AS exclusivity_count,
       MAX(p."expiryAdjustmentDays") FILTER (WHERE p."delistedAt" IS NULL) AS max_pta_gap_days,
-      -- Paragraph IV / GenericChallenge is deliberately Drug-only — see
-      -- README. Biosimilars use the separate BPCIA patent-dance process,
-      -- already tracked via Purple Book's own patent list.
-      FALSE AS has_generic_challenge
+      -- Paragraph IV / GenericChallenge and federal Hatch-Waxman litigation
+      -- are both deliberately Drug-only — see README. Biosimilars use the
+      -- separate BPCIA patent-dance process, already tracked via Purple
+      -- Book's own patent list.
+      FALSE AS has_generic_challenge,
+      FALSE AS has_litigation
     FROM "BiologicProduct" bp
     JOIN "Company" c ON c.id = bp."companyId"
     LEFT JOIN "Patent" p ON p."biologicProductId" = bp.id
@@ -182,7 +200,7 @@ const COMBINED_CTE = Prisma.sql`
       id, source, name, "alternateName", "applicationType", "licenseType",
       "dosageForm", route, strength, "approvalDate", modality, "drugClass",
       "companyId", "companyName",
-      patent_count, exclusivity_count, max_pta_gap_days, has_generic_challenge,
+      patent_count, exclusivity_count, max_pta_gap_days, has_generic_challenge, has_litigation,
       GREATEST(max_patent_date, max_exclusivity_date) AS estimated_generic_entry_date,
       -- confirmed: the winning date is achieved by an exclusivity (always
       -- FDA-final) or by a patent whose adjustment has actually been
@@ -217,6 +235,7 @@ interface FilterConditionInputs {
   minPtaGapDays: number | null;
   hasGenericChallenge: boolean;
   hasFirstCommercialMarketingDate: boolean;
+  hasLitigation: boolean;
 }
 
 // EXISTS against Patent/Exclusivity, correlated by either parent FK — cuid
@@ -282,6 +301,7 @@ function buildConditions(input: FilterConditionInputs): Record<string, Prisma.Sq
     minPtaGapDays: input.minPtaGapDays != null ? Prisma.sql`max_pta_gap_days >= ${input.minPtaGapDays}` : Prisma.sql`TRUE`,
     hasGenericChallenge: input.hasGenericChallenge ? Prisma.sql`has_generic_challenge` : Prisma.sql`TRUE`,
     hasFirstCommercialMarketingDate: input.hasFirstCommercialMarketingDate ? hasFirstCommercialMarketingDateCondition() : Prisma.sql`TRUE`,
+    hasLitigation: input.hasLitigation ? Prisma.sql`has_litigation` : Prisma.sql`TRUE`,
   };
 }
 
@@ -313,6 +333,7 @@ interface CombinedRow {
   exclusivityCount: bigint;
   maxPtaGapDays: number | null;
   hasGenericChallenge: boolean;
+  hasLitigation: boolean;
   totalCount: bigint;
 }
 
@@ -344,6 +365,7 @@ function buildFilterInputs(query: ListDrugsQuery): FilterConditionInputs {
     minPtaGapDays: query.minPtaGapDays ?? null,
     hasGenericChallenge: query.hasGenericChallenge === "true",
     hasFirstCommercialMarketingDate: query.hasFirstCommercialMarketingDate === "true",
+    hasLitigation: query.hasLitigation === "true",
   };
 }
 
@@ -408,6 +430,7 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
         exclusivity_count AS "exclusivityCount",
         max_pta_gap_days AS "maxPtaGapDays",
         has_generic_challenge AS "hasGenericChallenge",
+        has_litigation AS "hasLitigation",
         count(*) OVER() AS "totalCount"
       FROM combined
       WHERE ${where}
@@ -439,6 +462,7 @@ export async function listDrugs(query: ListDrugsQuery): Promise<ListDrugsResult>
     exclusivityCount: Number(row.exclusivityCount),
     maxPtaGapDays: row.maxPtaGapDays,
     hasGenericChallenge: row.hasGenericChallenge,
+    hasLitigation: row.hasLitigation,
   }));
 
   return {
@@ -500,9 +524,25 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
     where: { id },
     include: {
       company: true,
-      patents: { orderBy: { effectiveExpiryDate: "asc" } },
-      exclusivities: { orderBy: { expirationDate: "asc" } },
-      challengeLinks: { include: { genericChallenge: true }, orderBy: { genericChallenge: { submissionDate: "desc" } } },
+      patents: { orderBy: { effectiveExpiryDate: "asc" }, include: { ingestionRecords: LATEST_INGESTION_RECORD_SOURCE } },
+      exclusivities: { orderBy: { expirationDate: "asc" }, include: { ingestionRecords: LATEST_INGESTION_RECORD_SOURCE } },
+      challengeLinks: {
+        include: { genericChallenge: { include: { ingestionRecords: LATEST_INGESTION_RECORD_SOURCE } } },
+        orderBy: { genericChallenge: { submissionDate: "desc" } },
+      },
+      litigationLinks: {
+        include: {
+          litigationCase: {
+            include: {
+              plaintiffCompany: true,
+              defendantCompany: true,
+              dockets: { orderBy: { filingDate: "asc" } },
+              ingestionRecords: LATEST_INGESTION_RECORD_SOURCE,
+            },
+          },
+        },
+        orderBy: { litigationCase: { earliestFilingDate: "desc" } },
+      },
     },
   });
 
@@ -534,6 +574,7 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
       expiryAdjustmentDays: p.expiryAdjustmentDays,
       submittedDate: toDateString(p.submittedDate),
       delistedAt: toDateString(p.delistedAt),
+      manuallyEntered: wasManuallyEntered(p.ingestionRecords),
     })),
     exclusivities: drug.exclusivities.map((e) => ({
       id: e.id,
@@ -541,6 +582,7 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
       description: e.description,
       grantedDate: toDateString(e.grantedDate),
       expirationDate: toDateString(e.expirationDate),
+      manuallyEntered: wasManuallyEntered(e.ingestionRecords),
     })),
     genericEntryEstimate: computeGenericEntryEstimate(drug.patents, drug.exclusivities),
     genericChallenges: drug.challengeLinks.map(({ genericChallenge: gc }) => ({
@@ -558,6 +600,29 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
       dateOfFirstApplicantApproval: toDateString(gc.dateOfFirstApplicantApproval),
       dateOfFirstCommercialMarketing: toDateString(gc.dateOfFirstCommercialMarketing),
       expirationOfLastQualifyingPatent: toDateString(gc.expirationOfLastQualifyingPatent),
+      manuallyEntered: wasManuallyEntered(gc.ingestionRecords),
+    })),
+    litigationCases: drug.litigationLinks.map(({ litigationCase: lc }) => ({
+      id: lc.id,
+      plaintiffName: lc.plaintiffCompany?.name ?? lc.plaintiffNameRaw,
+      plaintiffMatched: lc.plaintiffCompany != null,
+      defendantName: lc.defendantCompany?.name ?? lc.defendantNameRaw,
+      defendantMatched: lc.defendantCompany != null,
+      earliestFilingDate: toDateString(lc.earliestFilingDate),
+      outcome: lc.outcome,
+      outcomeNote: lc.outcomeNote,
+      matchConfidence: lc.matchConfidence,
+      matchNote: lc.matchNote,
+      dockets: lc.dockets.map((d) => ({
+        id: d.id,
+        docketNumber: d.docketNumber,
+        court: d.court,
+        filingDate: toDateString(d.filingDate),
+        dateTerminated: toDateString(d.dateTerminated),
+        judge: d.judge,
+        natureOfSuit: d.natureOfSuit,
+      })),
+      manuallyEntered: wasManuallyEntered(lc.ingestionRecords),
     })),
   };
 }
@@ -571,8 +636,8 @@ export async function getBiologicById(id: string): Promise<BiologicDetail | null
       company: true,
       referenceProduct: { select: { id: true, proprietaryName: true, properName: true } },
       biosimilarsAndInterchangeables: { select: { id: true, proprietaryName: true, properName: true } },
-      patents: { orderBy: { effectiveExpiryDate: "asc" } },
-      exclusivities: { orderBy: { expirationDate: "asc" } },
+      patents: { orderBy: { effectiveExpiryDate: "asc" }, include: { ingestionRecords: LATEST_INGESTION_RECORD_SOURCE } },
+      exclusivities: { orderBy: { expirationDate: "asc" }, include: { ingestionRecords: LATEST_INGESTION_RECORD_SOURCE } },
     },
   });
 
@@ -609,6 +674,7 @@ export async function getBiologicById(id: string): Promise<BiologicDetail | null
       expiryAdjustmentDays: p.expiryAdjustmentDays,
       submittedDate: toDateString(p.submittedDate),
       delistedAt: toDateString(p.delistedAt),
+      manuallyEntered: wasManuallyEntered(p.ingestionRecords),
     })),
     exclusivities: bp.exclusivities.map((e) => ({
       id: e.id,
@@ -616,6 +682,7 @@ export async function getBiologicById(id: string): Promise<BiologicDetail | null
       description: e.description,
       grantedDate: toDateString(e.grantedDate),
       expirationDate: toDateString(e.expirationDate),
+      manuallyEntered: wasManuallyEntered(e.ingestionRecords),
     })),
     genericEntryEstimate: computeGenericEntryEstimate(bp.patents, bp.exclusivities),
   };
