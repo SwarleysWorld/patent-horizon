@@ -42,11 +42,16 @@ export default async function DataPage() {
   // part of this check.
   const fastSources = status.sources.slice(0, 3);
   const anyFastRunning = fastSources.some((s) => s.lastRun?.status === "RUNNING");
-  const runningSource = status.sources.find((s) => s.lastRun?.status === "RUNNING") ?? null;
+  // Multiple pipelines can legitimately run at once — e.g. PTA (hours-long)
+  // and litigation (its own independent trigger) alongside a "Refresh all"
+  // batch — so this lists every one currently RUNNING, not just the first
+  // found. Showing only one made the banner contradict a source card right
+  // below it that clearly said RUNNING.
+  const runningSources = status.sources.filter((s) => s.lastRun?.status === "RUNNING");
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-4 py-6">
-      <AutoRefresh fast={runningSource != null} />
+      <AutoRefresh fast={runningSources.length > 0} />
 
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -60,11 +65,15 @@ export default async function DataPage() {
         <TriggerButton pipeline="all" label="Refresh all" disabled={anyFastRunning} />
       </div>
 
-      {runningSource && (
-        <div className="flex items-center gap-2 rounded-md border border-ledger-200 bg-ledger-50 px-3 py-2 text-xs text-ledger-700 dark:border-ledger-800 dark:bg-ledger-500/10 dark:text-ledger-400">
-          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-ledger-500" />
-          Running now: <span className="font-medium">{runningSource.name}</span>
-          {runningSource.lastRun && <> &mdash; started {timeAgo(runningSource.lastRun.startedAt)}.</>}
+      {runningSources.length > 0 && (
+        <div className="flex flex-col gap-1 rounded-md border border-ledger-200 bg-ledger-50 px-3 py-2 text-xs text-ledger-700 dark:border-ledger-800 dark:bg-ledger-500/10 dark:text-ledger-400">
+          {runningSources.map((s) => (
+            <div key={s.name} className="flex items-center gap-2">
+              <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-ledger-500" />
+              Running now: <span className="font-medium">{s.name}</span>
+              {s.lastRun && <> &mdash; started {timeAgo(s.lastRun.startedAt)}.</>}
+            </div>
+          ))}
         </div>
       )}
 
