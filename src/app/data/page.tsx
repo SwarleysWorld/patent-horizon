@@ -97,6 +97,7 @@ export default async function DataPage() {
             command="npm run ingest:paragraph-iv"
             pipeline="paragraph_iv"
             blockedByOtherRun={anyFastRunning}
+            statLabels={["Challenges", "Matched to a drug", "Drug links created", "Rows skipped"]}
           />
         </div>
       </section>
@@ -104,7 +105,12 @@ export default async function DataPage() {
       <section>
         <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">Federal litigation tracking</h2>
         <div className="grid gap-3 sm:grid-cols-1">
-          <SourceCard source={status.sources[4]} command="npm run ingest:litigation" pipeline="litigation" />
+          <SourceCard
+            source={status.sources[4]}
+            command="npm run ingest:litigation"
+            pipeline="litigation"
+            statLabels={["Cases touched", "Dockets upserted", "Exclusivities", "Issues"]}
+          />
         </div>
         <p className="mt-2 text-xs text-paper-500 dark:text-paper-400">
           Checks CourtListener for Hatch-Waxman litigation involving companies with an existing Paragraph

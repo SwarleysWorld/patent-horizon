@@ -92,12 +92,18 @@ export async function runParagraphIVIngestion(opts: { explicitPdfUrl?: string } 
       data: {
         status,
         finishedAt,
-        // drugsUpserted is the generically-named "primary entity count"
-        // column shared across pipelines (same reuse as Purple Book's
-        // productsUpserted) — GenericChallenge rows belong here.
+        // drugsUpserted/patentsUpserted/exclusivitiesUpserted are the
+        // generically-named columns shared across pipelines (same reuse as
+        // litigation's casesTouched/docketsUpserted) — this pipeline
+        // doesn't touch Patent or Exclusivity rows at all, so rather than
+        // hardcode two columns to 0 (which read as "nothing happened" on
+        // the /data page even on a fully productive run), it reports the
+        // two numbers that actually describe what a run did downstream of
+        // the challenges themselves. See SourceCard's statLabels for the
+        // matching display labels.
         drugsUpserted: loadResult.challengesUpserted,
-        patentsUpserted: 0,
-        exclusivitiesUpserted: 0,
+        patentsUpserted: loadResult.matchedToAtLeastOneDrug,
+        exclusivitiesUpserted: loadResult.drugLinksCreated,
         rowsSkipped: loadResult.challengesSkipped,
         summary: JSON.parse(JSON.stringify(summary)),
       },

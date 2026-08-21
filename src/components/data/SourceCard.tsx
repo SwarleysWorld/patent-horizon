@@ -54,6 +54,7 @@ export function SourceCard({
   command,
   pipeline,
   blockedByOtherRun,
+  statLabels = ["Products", "Patents", "Exclusivities", "Rows skipped"],
 }: {
   source: DataSourceStatus;
   command: string;
@@ -63,6 +64,14 @@ export function SourceCard({
   // e.g. all three "Refresh all" pipelines while any one of them is
   // mid-run. Without this, that button looked clickable and would 409.
   blockedByOtherRun?: boolean;
+  // [drugsUpserted, patentsUpserted, exclusivitiesUpserted, rowsSkipped]'s
+  // display labels. Defaults to the FDA-source wording; pipelines that
+  // don't literally touch Patent/Exclusivity rows (paragraph_iv,
+  // litigation) reuse those same generic DB columns for their own
+  // downstream counts (see each pipeline's own index.ts) and pass labels
+  // that match what's actually stored instead of showing "0" next to
+  // "Patents" on a run that touched none.
+  statLabels?: [string, string, string, string];
 }) {
   const run = source.lastRun;
   const isRunning = run?.status === "RUNNING";
@@ -106,19 +115,19 @@ export function SourceCard({
           )}
           <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
             <div>
-              <dt className="text-paper-400">Products</dt>
+              <dt className="text-paper-400">{statLabels[0]}</dt>
               <dd className="font-mono tabular-nums text-paper-800 dark:text-paper-200">{run.drugsUpserted.toLocaleString()}</dd>
             </div>
             <div>
-              <dt className="text-paper-400">Patents</dt>
+              <dt className="text-paper-400">{statLabels[1]}</dt>
               <dd className="font-mono tabular-nums text-paper-800 dark:text-paper-200">{run.patentsUpserted.toLocaleString()}</dd>
             </div>
             <div>
-              <dt className="text-paper-400">Exclusivities</dt>
+              <dt className="text-paper-400">{statLabels[2]}</dt>
               <dd className="font-mono tabular-nums text-paper-800 dark:text-paper-200">{run.exclusivitiesUpserted.toLocaleString()}</dd>
             </div>
             <div>
-              <dt className="text-paper-400">Rows skipped</dt>
+              <dt className="text-paper-400">{statLabels[3]}</dt>
               <dd className="font-mono tabular-nums text-paper-800 dark:text-paper-200">{run.rowsSkipped.toLocaleString()}</dd>
             </div>
           </dl>
