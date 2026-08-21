@@ -8,6 +8,7 @@ export { PTA_SOURCE_NAME } from "./enrich";
 export interface PtaRunOptions {
   limit?: number;
   patentIds?: string[];
+  recheckSuspicious?: boolean; // re-examine patents whose CURRENT expiryAdjustmentDays is already above the suspicious threshold, regardless of prior ingestion records — see selectCandidatePatents
   apiKey?: string; // override for testing; defaults to process.env.USPTO_ODP_API_KEY
 }
 
@@ -65,7 +66,11 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
   }
 
   const client = new UsptoOdpClient(apiKey);
-  const candidates = await selectCandidatePatents(source.id, { limit: opts.limit, patentIds: opts.patentIds });
+  const candidates = await selectCandidatePatents(source.id, {
+    limit: opts.limit,
+    patentIds: opts.patentIds,
+    recheckSuspicious: opts.recheckSuspicious,
+  });
 
   const results: PtaRunResultRow[] = [];
   let updated = 0;

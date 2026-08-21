@@ -298,6 +298,35 @@ export const LitigationCaseSchema = z.object({
   manuallyEntered: z.boolean(),
 });
 
+// ---- Settlement disclosures (SEC EDGAR 10-K/10-Q) -----------------------
+//
+// The LOWEST-confidence source on this page — even weaker than
+// LitigationCaseSchema's company-name matching, since this is extracted
+// from filing PROSE via pattern-matching, not an exact-ID or resolved-name
+// match. Exists to surface a real gap: a settlement that resolves
+// litigation without a clean, attributable court disposition (the parties
+// jointly stipulate dismissal, and the actual licensed generic-entry date
+// lives only in the settlement agreement, voluntarily disclosed in a
+// later 10-K/10-Q) is invisible to RECAP-only sourcing. See
+// SettlementDisclosure's Prisma doc comment and
+// src/components/drugs/SettlementCallout.tsx — always shown alongside a
+// computed estimate, never in place of it.
+export const SettlementDisclosureSchema = z.object({
+  id: z.string(),
+  counterpartyNameRaw: z.string(),
+  counterpartyMatched: z.boolean(),
+  filingCompanyNameRaw: z.string(),
+  settlementAnnouncedDate: z.iso.date().nullable(),
+  licensedEntryDate: z.iso.date().nullable(),
+  earlierCircumstancesNoted: z.boolean(),
+  sourceForm: z.string(),
+  sourceFileDate: z.iso.date(),
+  sourceFilingUrl: z.string(),
+  extractedExcerpt: z.string(),
+  extractionConfidence: z.enum(["HIGH", "MEDIUM", "LOW"]),
+  extractionNote: z.string(),
+});
+
 // ---- Response body: GET /api/drugs/[id] (Orange Book detail) ----------
 
 export const DrugDetailSchema = z.object({
@@ -315,6 +344,8 @@ export const DrugDetailSchema = z.object({
   genericChallenges: z.array(GenericChallengeSchema),
   /** Empty for the overwhelming majority of drugs. Orange Book only — see LitigationCaseSchema's doc comment on confidence. */
   litigationCases: z.array(LitigationCaseSchema),
+  /** Empty for the overwhelming majority of drugs. See SettlementDisclosureSchema's doc comment — the lowest-confidence source on this page. */
+  settlementDisclosures: z.array(SettlementDisclosureSchema),
 });
 
 // ---- Response body: GET /api/biologics/[id] (Purple Book detail) ------

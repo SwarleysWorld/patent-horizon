@@ -8,6 +8,7 @@ import { MODALITY_LABELS } from "@/lib/classification/modality";
 import { GenericEntryCallout } from "@/components/drugs/GenericEntryCallout";
 import { GenericChallengeCallout } from "@/components/drugs/GenericChallengeCallout";
 import { LitigationCallout } from "@/components/drugs/LitigationCallout";
+import { SettlementCallout } from "@/components/drugs/SettlementCallout";
 import { PatentsTable } from "@/components/drugs/PatentsTable";
 import { ExclusivitiesTable } from "@/components/drugs/ExclusivitiesTable";
 import { BackLink } from "@/components/drugs/BackLink";
@@ -54,11 +55,17 @@ export default async function DrugDetailPage({ params }: { params: Promise<{ id:
         </p>
       </div>
 
-      <GenericEntryCallout estimate={drug.genericEntryEstimate} challenges={drug.genericChallenges} />
+      <GenericEntryCallout
+        estimate={drug.genericEntryEstimate}
+        challenges={drug.genericChallenges}
+        settlements={drug.settlementDisclosures}
+      />
 
       <GenericChallengeCallout challenges={drug.genericChallenges} />
 
-      <LitigationCallout cases={drug.litigationCases} />
+      <LitigationCallout cases={drug.litigationCases} companyName={drug.company.name} productName={drug.brandName} />
+
+      <SettlementCallout settlements={drug.settlementDisclosures} />
 
       <section>
         <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">

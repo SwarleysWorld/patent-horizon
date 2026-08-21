@@ -9,10 +9,11 @@ import { runOrangeBookIngestion, ORANGE_BOOK_SOURCE_NAME } from "./orangeBook";
 import { runPurpleBookIngestion, PURPLE_BOOK_SOURCE_NAME } from "./purpleBook";
 import { runParagraphIVIngestion, PARAGRAPH_IV_SOURCE_NAME } from "./paragraphIV";
 import { runPtaEnrichment, PTA_SOURCE_NAME } from "./pta";
-import { runLitigationIngestion, LITIGATION_SOURCE_NAME } from "./litigation";
+import { runLitigationIngestion, LITIGATION_SOURCE_NAME, runComplaintEnrichment, LITIGATION_COMPLAINT_SOURCE_NAME } from "./litigation";
+import { runSettlementsIngestion, SETTLEMENTS_SOURCE_NAME } from "./settlements";
 import { requestCancel } from "./cancellation";
 
-export type PipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta" | "litigation";
+export type PipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta" | "litigation" | "litigation_complaints" | "settlements";
 
 // Every pipeline checks the cancellation flag mid-run now (see each
 // pipeline's own run loop and cancellation.ts): PTA and litigation check a
@@ -27,6 +28,8 @@ const CANCELLABLE_PIPELINES: ReadonlySet<PipelineKey> = new Set<PipelineKey>([
   "paragraph_iv",
   "pta",
   "litigation",
+  "litigation_complaints",
+  "settlements",
 ]);
 
 const PIPELINES: Record<PipelineKey, { sourceName: string; run: () => Promise<{ status: string }> }> = {
@@ -35,6 +38,8 @@ const PIPELINES: Record<PipelineKey, { sourceName: string; run: () => Promise<{ 
   paragraph_iv: { sourceName: PARAGRAPH_IV_SOURCE_NAME, run: () => runParagraphIVIngestion() },
   pta: { sourceName: PTA_SOURCE_NAME, run: () => runPtaEnrichment() },
   litigation: { sourceName: LITIGATION_SOURCE_NAME, run: () => runLitigationIngestion() },
+  litigation_complaints: { sourceName: LITIGATION_COMPLAINT_SOURCE_NAME, run: () => runComplaintEnrichment() },
+  settlements: { sourceName: SETTLEMENTS_SOURCE_NAME, run: () => runSettlementsIngestion() },
 };
 
 // "Refresh all" mirrors `npm run refresh:data`'s scope on purpose — it is

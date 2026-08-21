@@ -3,7 +3,14 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export type StoppablePipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta" | "litigation";
+export type StoppablePipelineKey =
+  | "orange_book"
+  | "purple_book"
+  | "paragraph_iv"
+  | "pta"
+  | "litigation"
+  | "litigation_complaints"
+  | "settlements";
 
 // Only rendered next to a pipeline that's actually RUNNING (see SourceCard
 // and the /data page's PTA section) — POSTs to /api/data/ingest/stop,

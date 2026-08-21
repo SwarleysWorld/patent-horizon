@@ -10,9 +10,16 @@ import { loadHitsForCompany } from "./load";
 import type { CompanyRef, MatchConfidenceTier } from "./match";
 import { normalizeCompanyName } from "./match";
 import type { RowIssue } from "./types";
+import { LITIGATION_SOURCE_NAME } from "./types";
 import { isCancelRequested } from "../cancellation";
 
-export const LITIGATION_SOURCE_NAME = "CourtListener RECAP (Hatch-Waxman litigation, D. Del. / D.N.J.)";
+export { LITIGATION_SOURCE_NAME } from "./types";
+export {
+  runComplaintEnrichment,
+  LITIGATION_COMPLAINT_SOURCE_NAME,
+  type ComplaintEnrichmentRunOptions,
+  type ComplaintEnrichmentRunSummary,
+} from "./complaintEnrich";
 const COURTLISTENER_INFO_URL = "https://www.courtlistener.com/help/api/rest/v4/";
 
 const DEFAULT_BATCH_SIZE = 25;

@@ -38,12 +38,27 @@ const CANDIDATE_SELECT = {
 
 export async function selectCandidatePatents(
   sourceId: string,
-  opts: { limit?: number; patentIds?: string[] },
+  opts: { limit?: number; patentIds?: string[]; recheckSuspicious?: boolean },
 ): Promise<PatentCandidate[]> {
   if (opts.patentIds && opts.patentIds.length > 0) {
     return prisma.patent.findMany({
       where: { id: { in: opts.patentIds } },
       select: CANDIDATE_SELECT,
+    });
+  }
+  if (opts.recheckSuspicious) {
+    // Rows whose CURRENT expiryAdjustmentDays already exceeds the sanity
+    // threshold — deliberately NOT filtered by `ingestionRecords: none`,
+    // since these are exactly the ones a pre-safeguard run may have
+    // already written a bad effectiveExpiryDate for (see the 3650d
+    // threshold below and the flagged branch's corrective reset). A
+    // normal run would never re-select these; this is the only path that
+    // catches historical bad writes made before that safeguard existed.
+    return prisma.patent.findMany({
+      where: { expiryAdjustmentDays: { gt: SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS } },
+      select: CANDIDATE_SELECT,
+      orderBy: { expiryAdjustmentDays: "desc" },
+      take: opts.limit,
     });
   }
   return prisma.patent.findMany({
@@ -139,16 +154,34 @@ export async function enrichOnePatent(
   if (expiryAdjustmentDays > SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS) {
     // Still write a record — checked, not skipped — so this patent doesn't
     // get re-selected as a candidate on every future run just to compute
-    // the same suspect result again. The Patent row itself is left
-    // untouched: whatever was there before (typically Orange/Purple
-    // Book's own listed date) stays the visible figure until a human
-    // resolves this.
+    // the same suspect result again.
+    //
+    // The Patent row is reset to the Orange/Purple Book baseline
+    // (effectiveExpiryDate = nominalExpiryDate, expiryAdjustmentDays =
+    // null) rather than merely "left as-is". For a genuinely first-time
+    // candidate those two are already equal to that baseline (see
+    // orangeBook/parse.ts), so this is a no-op. But this same flagged
+    // branch is also reachable via selectCandidatePatents's
+    // `recheckSuspicious` mode, which re-examines patents a PRE-safeguard
+    // version of this pipeline already wrote a bad large-adjustment
+    // effectiveExpiryDate for (confirmed real case: patent 10703763,
+    // Xifaxan/NDA021361 — written 2026-08-19, a day before this threshold
+    // existed, with a live-confirmed USPTO PTA of 0d). Without an
+    // explicit reset here, "left unchanged" would mean leaving that
+    // earlier bad write in place forever, since a flagged outcome never
+    // resembles an "updated" one a human would think to revert.
+    if (daysBetween(patent.nominalExpiryDate, patent.effectiveExpiryDate) !== 0 || patent.expiryAdjustmentDays !== null) {
+      await prisma.patent.update({
+        where: { id: patent.id },
+        data: { effectiveExpiryDate: patent.nominalExpiryDate, expiryAdjustmentDays: null },
+      });
+    }
     await prisma.ingestionRecord.create({
       data: {
         sourceId,
         patentId: patent.id,
         verifiedAt,
-        changeNote: `USPTO PTA=${ptaDays}d, filingDate(${result.filingDate}) + ${STATUTORY_TERM_YEARS}y computes an effective date ${expiryAdjustmentDays}d (${(expiryAdjustmentDays / 365).toFixed(1)}y) past the existing listed date — beyond the ${SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS}d sanity threshold, likely a continuation/divisional application whose own filing date isn't its term's true starting point (see README). Flagged for manual review; existing dates left unchanged.`,
+        changeNote: `USPTO PTA=${ptaDays}d, filingDate(${result.filingDate}) + ${STATUTORY_TERM_YEARS}y computes an effective date ${expiryAdjustmentDays}d (${(expiryAdjustmentDays / 365).toFixed(1)}y) past the existing listed date — beyond the ${SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS}d sanity threshold, likely a continuation/divisional application whose own filing date isn't its term's true starting point (see README). Flagged for manual review; effectiveExpiryDate reset to the Orange/Purple Book listed date (expiryAdjustmentDays cleared) if it wasn't already.`,
         rawPayload: JSON.parse(JSON.stringify(result.raw)),
       },
     });

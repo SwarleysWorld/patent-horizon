@@ -1,9 +1,10 @@
 import clsx from "clsx";
 import type { DrugDetail, GenericEntryEstimate } from "@/lib/drugs/schemas";
-import { urgencyOf, daysFromToday, formatDate, formatRelativeDays } from "@/lib/format";
+import { urgencyOf, daysFromToday, formatDate, formatRelativeDays, cleanEdgarFilerName } from "@/lib/format";
 import { EntryDateCell } from "./EntryDateCell";
 
 type Challenge = DrugDetail["genericChallenges"][number];
+type Settlement = DrugDetail["settlementDisclosures"][number];
 
 const BORDER_STYLES = {
   open: "border-statute-200 bg-statute-50/60 dark:border-statute-900 dark:bg-statute-500/5",
@@ -76,6 +77,65 @@ function RealEntryHero({ realEntry, estimate }: { realEntry: { date: string; mat
   );
 }
 
+// Second-ranked real-world signal, below an actually-occurred marketing
+// date but above the computed estimate — a settlement's licensed date is
+// a firm contractual fact, not an inference from patent math, but unlike
+// findRealEntry's dateOfFirstCommercialMarketing it isn't necessarily in
+// the past (Xifaxan's real 2018 Actavis settlement licenses generic entry
+// beginning 2028 — a real, controlling fact today even though it hasn't
+// happened yet). Only promoted to the hero slot when it's actually
+// EARLIER than the computed patent-based estimate — a settlement that
+// licenses entry LATER than patents would allow anyway isn't the
+// controlling date and shouldn't lead the page; it still appears in
+// SettlementCallout's own detail section either way.
+function findLicensedEntry(settlements: Settlement[], estimate: GenericEntryEstimate): { date: string; settlement: Settlement } | null {
+  const withDates = settlements.filter((s) => s.licensedEntryDate != null);
+  if (withDates.length === 0) return null;
+  const earliest = withDates.reduce((e, s) => (s.licensedEntryDate! < e.licensedEntryDate! ? s : e));
+  if (estimate.date && earliest.licensedEntryDate! >= estimate.date) return null;
+  return { date: earliest.licensedEntryDate!, settlement: earliest };
+}
+
+function LicensedEntryHero({ licensedEntry, estimate }: { licensedEntry: { date: string; settlement: Settlement }; estimate: GenericEntryEstimate }) {
+  const days = daysFromToday(licensedEntry.date);
+  const { settlement } = licensedEntry;
+  return (
+    <div className={clsx("rounded-lg border p-5", BORDER_STYLES.upcoming)}>
+      <div className="text-xs font-medium tracking-wide text-paper-500 uppercase dark:text-paper-400">
+        Licensed generic entry <span className="normal-case text-paper-400">(per settlement, not a court ruling)</span>
+      </div>
+      <div className="mt-2 flex items-baseline gap-3">
+        <span className="font-mono text-3xl font-semibold tabular-nums text-paper-900 dark:text-paper-50">
+          {formatDate(licensedEntry.date)}
+        </span>
+        <span className="inline-flex items-center gap-1.5 text-sm font-medium text-paper-600 dark:text-paper-400">
+          {days < 0 ? "already reached" : formatRelativeDays(days)}
+        </span>
+      </div>
+      <p className="mt-2 max-w-2xl text-sm text-paper-600 dark:text-paper-400">
+        Per a settlement disclosed by {cleanEdgarFilerName(settlement.filingCompanyNameRaw)} with {settlement.counterpartyNameRaw}
+        {settlement.earlierCircumstancesNoted && ", or earlier under certain circumstances"} — extracted from an SEC
+        filing, not a court record; treat as provisional until verified against the primary source.{" "}
+        <a href="#settlements" className="font-medium text-ledger-700 hover:underline dark:text-ledger-400">
+          See settlement details below ↓
+        </a>
+      </p>
+      {estimate.date && (
+        <div className="mt-3 border-t border-flag-200/60 pt-3 dark:border-flag-900/60">
+          <p className="max-w-2xl text-xs text-paper-500 dark:text-paper-500">
+            Patent-based estimate: <span className="font-mono">{formatDate(estimate.date)}</span>, based on{" "}
+            {estimate.controllingLabel}
+            {estimate.dateConfidence === "confirmed"
+              ? " (its term is USPTO-verified)"
+              : " (not yet checked against USPTO records)"}{" "}
+            — the settlement above controls, since it&apos;s earlier.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EstimateHero({ estimate }: { estimate: GenericEntryEstimate }) {
   const urgency = estimate.date ? urgencyOf(daysFromToday(estimate.date)) : "none";
 
@@ -108,11 +168,15 @@ function EstimateHero({ estimate }: { estimate: GenericEntryEstimate }) {
 export function GenericEntryCallout({
   estimate,
   challenges,
+  settlements,
 }: {
   estimate: GenericEntryEstimate;
   challenges: DrugDetail["genericChallenges"];
+  settlements: DrugDetail["settlementDisclosures"];
 }) {
   const realEntry = findRealEntry(challenges);
   if (realEntry) return <RealEntryHero realEntry={realEntry} estimate={estimate} />;
+  const licensedEntry = findLicensedEntry(settlements, estimate);
+  if (licensedEntry) return <LicensedEntryHero licensedEntry={licensedEntry} estimate={estimate} />;
   return <EstimateHero estimate={estimate} />;
 }

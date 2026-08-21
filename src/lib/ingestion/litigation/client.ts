@@ -16,9 +16,10 @@
 // with a comma-separated list confirmed to AND correctly with `q=` (every
 // result returned was scoped to the requested courts).
 
-import type { RecapSearchHit, SearchResult } from "./types";
+import type { RecapSearchHit, SearchResult, ComplaintFetchResult } from "./types";
 
 const SEARCH_URL = "https://www.courtlistener.com/api/rest/v4/search/";
+const DOCKET_ENTRIES_URL = "https://www.courtlistener.com/api/rest/v4/docket-entries/";
 
 // 5 req/min is the binding constraint (tighter than 50/hour ÷ 60 ≈ 0.83/min
 // and 125/day). 60_000ms / 5 = 12_000ms exactly; padded to 13_000ms to
@@ -67,6 +68,67 @@ export class CourtListenerClient {
   // load-bearing here too, not just an optimization.
   async lookupByDocketNumber(docketNumber: string): Promise<SearchResult> {
     return this.executeSearch(`docketNumber:${encodeURIComponent(`"${docketNumber}"`)}`);
+  }
+
+  // Fetches docket entry #1 for an already-known docket (by CourtListener's
+  // own numeric docket id, the same externalDocketId already stored on
+  // LitigationDocket) — Hatch-Waxman/ANDA complaints are essentially always
+  // filed as Document 1. Shares this same client's throttle/backoff with
+  // searchHatchWaxmanCases and lookupByDocketNumber (CourtListener's rate
+  // limit is per-account across the whole v4 REST API, not per-endpoint —
+  // confirmed via a live test call returning entries with nested
+  // recap_documents[] carrying both `is_available` and, when true, an
+  // already-OCR'd `plain_text` field, so no PDF fetch/OCR is needed on our
+  // end for anything CourtListener already has for free — see
+  // complaint.ts's doc comment for the full shape confirmed live).
+  //
+  // "not_scraped" (no docket-entries at all for this docket in
+  // CourtListener's system) and "no_free_text" (entry #1 exists but no
+  // attached document has plain_text — e.g. paid-only, or an image-only
+  // scan CourtListener hasn't OCR'd) are both real, common, and distinct
+  // from "error" — callers must not treat them as failures.
+  async fetchComplaintEntry(externalDocketId: number): Promise<ComplaintFetchResult> {
+    const url = `${DOCKET_ENTRIES_URL}?docket=${externalDocketId}&entry_number=1`;
+
+    for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+      await this.throttle();
+      this.lastRequestAt = Date.now();
+
+      let res: Response;
+      try {
+        res = await fetch(url, { headers: { Authorization: `Token ${this.apiKey}`, accept: "application/json" } });
+      } catch (error) {
+        return { status: "error", errorMessage: `network error: ${error instanceof Error ? error.message : String(error)}` };
+      }
+
+      if (res.status === 429) {
+        if (attempt === MAX_429_RETRIES) return { status: "error", errorMessage: "rate limited after max retries" };
+        await new Promise((resolve) => setTimeout(resolve, BACKOFF_ON_429_MS));
+        continue;
+      }
+      if (res.status === 403 || res.status === 401) {
+        return { status: "error", authError: true, errorMessage: `HTTP ${res.status} — check COURTLISTENER_API_KEY` };
+      }
+      if (!res.ok) {
+        return { status: "error", errorMessage: `HTTP ${res.status}` };
+      }
+
+      const body = (await res.json()) as { results?: unknown[] };
+      const entry = Array.isArray(body.results) ? (body.results[0] as Record<string, unknown> | undefined) : undefined;
+      if (!entry) return { status: "not_scraped" };
+
+      const docs = Array.isArray(entry.recap_documents) ? (entry.recap_documents as Record<string, unknown>[]) : [];
+      const withText = docs.find((d) => typeof d.plain_text === "string" && d.plain_text.length > 0);
+      if (!withText) return { status: "no_free_text" };
+
+      return {
+        status: "found",
+        plainText: withText.plain_text as string,
+        documentNumber: typeof withText.document_number === "string" ? withText.document_number : null,
+      };
+    }
+
+    return { status: "error", errorMessage: "unreachable" };
   }
 
   private async executeSearch(qParam: string): Promise<SearchResult> {

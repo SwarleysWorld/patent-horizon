@@ -89,6 +89,8 @@ model Company {
   litigationCasesAsPlaintiff LitigationCase[] @relation("LitigationPlaintiff")
   litigationCasesAsDefendant LitigationCase[] @relation("LitigationDefendant")
 
+  settlementCounterpartyLinks SettlementDisclosure[] @relation("SettlementCounterparty")
+
   @@index([litigationLastCheckedAt])
 }
 
@@ -126,6 +128,15 @@ model Drug {
 
   approvalDate DateTime?
 
+  // Stamped after every settlements-pipeline check of this drug's brand
+  // name (found or not) — see src/lib/ingestion/settlements/index.ts. Null
+  // = never checked. Same resumable-batching role as
+  // Company.litigationLastCheckedAt, but keyed by Drug (brand name is what
+  // gets searched against EDGAR, not the applicant company — see
+  // SettlementDisclosure's doc comment on why there's no parent-company
+  // resolution here) rather than by Company.
+  settlementsLastCheckedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -135,6 +146,7 @@ model Drug {
   challengeLinks   GenericChallengeDrug[]
   watchlistItems   WatchlistItem[]
   litigationLinks  LitigationCaseDrug[]
+  settlementLinks  SettlementDisclosureDrug[]
 
   @@unique([applicationNumber, productNumber])
   @@index([brandName])
@@ -143,6 +155,7 @@ model Drug {
   @@index([modality])
   @@index([drugClass])
   @@index([dosageForm])
+  @@index([settlementsLastCheckedAt])
 }
 
 // One licensed biologic product, from FDA's Purple Book — the biologics
@@ -561,6 +574,16 @@ model LitigationCase {
   matchConfidence LitigationMatchConfidence
   matchNote       String? // human-readable "why this tier" explanation — see match.ts scoreConfidence(); always rendered in the UI, not hidden behind a tooltip
 
+  // Stamped after every complaint-enrichment check of this case (found
+  // usable identifiers or not) — see src/lib/ingestion/litigation/
+  // complaintEnrich.ts. Null = never checked. Same resumable-batching
+  // watermark role as Company.litigationLastCheckedAt and
+  // Drug.settlementsLastCheckedAt, but per-case: this pipeline fetches
+  // the COMPLAINT (Document 1) for a case already in this table, an
+  // entirely separate CourtListener call from the company-name search
+  // that created the case in the first place.
+  complaintCheckedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -571,6 +594,7 @@ model LitigationCase {
   @@index([plaintiffCompanyId])
   @@index([defendantCompanyId])
   @@index([outcome])
+  @@index([complaintCheckedAt])
 }
 
 // One row per actual CourtListener RECAP docket — the thing that really
@@ -625,6 +649,101 @@ model LitigationCaseDrug {
   createdAt DateTime @default(now())
 
   @@unique([litigationCaseId, drugId])
+  @@index([drugId])
+}
+
+// How much structure backs an extracted settlement fact — see
+// src/lib/ingestion/settlements/extract.ts. HIGH = the filing's own
+// templated "<Drug> Patent Litigation (<Counterparty>) - ..." heading
+// matched AND an explicit "beginning <date>" licensed-entry date was
+// found. MEDIUM = the heading/settlement narrative matched but no
+// explicit licensed-entry date could be pulled out (e.g. a different
+// phrasing). LOW = only a weak keyword-proximity signal, no clean
+// template match. Same "never presented with the same visual certainty
+// as an exact-ID match" rule as LitigationMatchConfidence — if anything
+// this is the WEAKER of the two, since it's free-text extraction, not
+// even a company-name match.
+enum SettlementExtractionConfidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+// A drug patent litigation SETTLEMENT disclosed in a company's own SEC
+// filing (10-K/10-Q), not a RECAP court docket — see
+// src/lib/ingestion/settlements/. Exists because a settlement that
+// resolves litigation without a clean, attributable court disposition
+// (the common real-world shape: parties stipulate dismissal, and the
+// actual terms — a licensed generic-entry date — live only in the
+// settlement agreement, voluntarily disclosed in the next 10-K/10-Q) is
+// invisible to RECAP-only sourcing, the gap LitigationCase's own doc
+// comment doesn't cover. Real case this was built against: Bausch
+// Health's 2018 Xifaxan/Actavis settlement, disclosed in BHC's 10-Q
+// filings with an explicit "beginning January 1, 2028" licensed
+// generic-entry date that never appears in any RECAP docket for that
+// case.
+//
+// No attempt is made to resolve filingCompanyNameRaw to a Company row —
+// SEC filings are made at the parent-company level (e.g. Bausch Health),
+// while Orange Book's Company rows are the NDA-holder subsidiary (e.g.
+// Salix); this schema has no parent/subsidiary relationship to bridge
+// that (see Company's doc comment), so the raw filer name is kept as-is
+// rather than guessed at. Matching to a Drug instead goes through
+// drugNameRaw (brand name) directly — see settlements/index.ts.
+//
+// Deliberately the SECOND-lowest-confidence source in this schema (after
+// LitigationCase itself) — extracted from filing PROSE via a hand-written
+// text pattern, not an exact-ID match. Always pair with
+// extractionConfidence/extractionNote in the UI, and never silently
+// replace a computed estimate.
+model SettlementDisclosure {
+  id String @id @default(cuid())
+
+  drugNameRaw String // brand name searched for, as it appears in the filing text (e.g. "Xifaxan")
+
+  counterpartyNameRaw   String // the other party, as extracted from the "... Patent Litigation (<Counterparty>)" heading
+  counterpartyCompanyId String?
+  counterpartyCompany   Company? @relation("SettlementCounterparty", fields: [counterpartyCompanyId], references: [id])
+
+  filingCompanyNameRaw String // SEC's own display name for the filer, e.g. "Bausch Health Companies Inc." — see doc comment above on why this isn't resolved to a Company row
+
+  settlementAnnouncedDate   DateTime?
+  licensedEntryDate         DateTime?
+  earlierCircumstancesNoted Boolean   @default(false) // filing text noted the license could start earlier under certain conditions (e.g. a competing generic launching first)
+
+  sourceForm       String // EDGAR's own form type — "10-K" | "10-Q" | "10-Q/A" etc.
+  sourceFileDate   DateTime
+  sourceFilingUrl  String
+  extractedExcerpt String // the raw matched paragraph, so a human can verify the extraction without leaving the page
+
+  extractionConfidence SettlementExtractionConfidence
+  extractionNote       String // human-readable "why this tier" — always rendered, same convention as LitigationCase.matchNote
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  drugLinks        SettlementDisclosureDrug[]
+  ingestionRecords IngestionRecord[]
+
+  @@unique([sourceFilingUrl, drugNameRaw, counterpartyNameRaw])
+  @@index([counterpartyCompanyId])
+  @@index([drugNameRaw])
+}
+
+// Many-to-many join between SettlementDisclosure and Drug — same shape as
+// LitigationCaseDrug/GenericChallengeDrug, since one filing's disclosure
+// can plausibly cover more than one strength/productNumber row under the
+// same NDA (drugNameRaw matches by brand name, which spans all of them).
+model SettlementDisclosureDrug {
+  id                     String               @id @default(cuid())
+  settlementDisclosureId String
+  settlementDisclosure   SettlementDisclosure @relation(fields: [settlementDisclosureId], references: [id], onDelete: Cascade)
+  drugId                 String
+  drug                   Drug                 @relation(fields: [drugId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([settlementDisclosureId, drugId])
   @@index([drugId])
 }
 
@@ -727,13 +846,14 @@ model IngestionRun {
 // time stay auditable.
 //
 // Exactly one of drugId / patentId / exclusivityId / biologicProductId /
-// genericChallengeId / litigationCaseId must be set — enforced by a CHECK
-// constraint added by hand in the migration SQL (Prisma's schema language
-// has no first-class check-constraint support yet). If you ever
-// regenerate this migration from scratch, re-add that constraint (now
-// 6-way: originally just drug/patent/exclusivity, extended for
-// BiologicProduct, extended again for GenericChallenge, extended again
-// for LitigationCase).
+// genericChallengeId / litigationCaseId / settlementDisclosureId must be
+// set — enforced by a CHECK constraint added by hand in the migration SQL
+// (Prisma's schema language has no first-class check-constraint support
+// yet). If you ever regenerate this migration from scratch, re-add that
+// constraint (now 7-way: originally just drug/patent/exclusivity,
+// extended for BiologicProduct, extended again for GenericChallenge,
+// extended again for LitigationCase, extended again for
+// SettlementDisclosure).
 model IngestionRecord {
   id String @id @default(cuid())
 
@@ -758,7 +878,10 @@ model IngestionRecord {
   litigationCaseId String?
   litigationCase   LitigationCase? @relation(fields: [litigationCaseId], references: [id], onDelete: Cascade)
 
-  externalRef String? // the source's own id/url for this record, for traceability + dedupe — holds the triggering CourtListener docket id for litigation records
+  settlementDisclosureId String?
+  settlementDisclosure   SettlementDisclosure? @relation(fields: [settlementDisclosureId], references: [id], onDelete: Cascade)
+
+  externalRef String? // the source's own id/url for this record, for traceability + dedupe — holds the triggering CourtListener docket id for litigation records, or the EDGAR filing URL for settlement records
   verifiedAt  DateTime @default(now())
   changeNote  String? // optional human-readable note of what changed, if anything
   rawPayload  Json? // optional raw snapshot from the source, for debugging ingestion
@@ -778,6 +901,7 @@ model IngestionRecord {
   @@index([biologicProductId, verifiedAt])
   @@index([genericChallengeId, verifiedAt])
   @@index([litigationCaseId, verifiedAt])
+  @@index([settlementDisclosureId, verifiedAt])
   @@index([sourceId, verifiedAt])
 }
 

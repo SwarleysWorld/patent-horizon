@@ -543,6 +543,10 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
         },
         orderBy: { litigationCase: { earliestFilingDate: "desc" } },
       },
+      settlementLinks: {
+        include: { settlementDisclosure: { include: { counterpartyCompany: true } } },
+        orderBy: { settlementDisclosure: { sourceFileDate: "desc" } },
+      },
     },
   });
 
@@ -623,6 +627,21 @@ export async function getDrugById(id: string): Promise<DrugDetail | null> {
         natureOfSuit: d.natureOfSuit,
       })),
       manuallyEntered: wasManuallyEntered(lc.ingestionRecords),
+    })),
+    settlementDisclosures: drug.settlementLinks.map(({ settlementDisclosure: sd }) => ({
+      id: sd.id,
+      counterpartyNameRaw: sd.counterpartyCompany?.name ?? sd.counterpartyNameRaw,
+      counterpartyMatched: sd.counterpartyCompany != null,
+      filingCompanyNameRaw: sd.filingCompanyNameRaw,
+      settlementAnnouncedDate: toDateString(sd.settlementAnnouncedDate),
+      licensedEntryDate: toDateString(sd.licensedEntryDate),
+      earlierCircumstancesNoted: sd.earlierCircumstancesNoted,
+      sourceForm: sd.sourceForm,
+      sourceFileDate: toDateString(sd.sourceFileDate),
+      sourceFilingUrl: sd.sourceFilingUrl,
+      extractedExcerpt: sd.extractedExcerpt,
+      extractionConfidence: sd.extractionConfidence,
+      extractionNote: sd.extractionNote,
     })),
   };
 }

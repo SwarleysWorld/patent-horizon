@@ -18,6 +18,11 @@ export function formatDate(dateStr: string): string {
   });
 }
 
+/** SEC EDGAR's full-text search `display_names` field appends " (TICKER)  (CIK 0000885590)" to the filer's real name — stripped for prose display; the raw value (with this suffix) is still what's stored on SettlementDisclosure.filingCompanyNameRaw for traceability. */
+export function cleanEdgarFilerName(name: string): string {
+  return name.replace(/\s*\([A-Z0-9.]{1,10}\)\s*\(CIK\s*\d+\)\s*$/i, "").trim();
+}
+
 /** "in 12 days", "in 8 months", "in 5 years", "23 days ago", "Today". */
 export function formatRelativeDays(days: number): string {
   if (days === 0) return "Today";

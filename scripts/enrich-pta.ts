@@ -2,8 +2,8 @@ import "dotenv/config";
 import { runPtaEnrichment } from "../src/lib/ingestion/pta";
 import { prisma } from "../src/lib/prisma";
 
-function parseArgs(argv: string[]): { limit?: number; patentNumbers?: string[] } {
-  const out: { limit?: number; patentNumbers?: string[] } = {};
+function parseArgs(argv: string[]): { limit?: number; patentNumbers?: string[]; recheckSuspicious?: boolean } {
+  const out: { limit?: number; patentNumbers?: string[]; recheckSuspicious?: boolean } = {};
 
   const limitIndex = argv.indexOf("--limit");
   if (limitIndex !== -1 && argv[limitIndex + 1]) {
@@ -15,6 +15,8 @@ function parseArgs(argv: string[]): { limit?: number; patentNumbers?: string[] }
     out.patentNumbers = argv[patentIndex + 1].split(",").map((s) => s.trim()).filter(Boolean);
   }
 
+  if (argv.includes("--recheck-suspicious")) out.recheckSuspicious = true;
+
   return out;
 }
 
@@ -24,7 +26,7 @@ function fmtDate(d: Date | null | undefined): string {
 }
 
 async function main() {
-  const { limit, patentNumbers } = parseArgs(process.argv.slice(2));
+  const { limit, patentNumbers, recheckSuspicious } = parseArgs(process.argv.slice(2));
 
   let patentIds: string[] | undefined;
   if (patentNumbers) {
@@ -37,10 +39,10 @@ async function main() {
   }
 
   console.log(
-    `[pta-enrich] starting${limit ? ` (limit ${limit})` : ""}${patentIds ? ` (explicit sample: ${patentIds.length} rows)` : ""}...`,
+    `[pta-enrich] starting${limit ? ` (limit ${limit})` : ""}${patentIds ? ` (explicit sample: ${patentIds.length} rows)` : ""}${recheckSuspicious ? " (rechecking already-suspicious rows)" : ""}...`,
   );
 
-  const summary = await runPtaEnrichment({ limit, patentIds });
+  const summary = await runPtaEnrichment({ limit, patentIds, recheckSuspicious });
 
   console.log("");
   console.log("=== PTA enrichment summary ===");

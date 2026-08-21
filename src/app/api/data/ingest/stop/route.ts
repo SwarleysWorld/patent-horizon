@@ -10,7 +10,7 @@ import { stopPipeline, type PipelineKey } from "@/lib/ingestion/orchestrator";
 // a "Refresh all" batch means stopping whichever of its steps is currently
 // running, not the batch as a concept.
 const StopBodySchema = z.object({
-  pipeline: z.enum(["orange_book", "purple_book", "paragraph_iv", "pta", "litigation"]),
+  pipeline: z.enum(["orange_book", "purple_book", "paragraph_iv", "pta", "litigation", "litigation_complaints", "settlements"]),
 });
 
 // Same auth shape as ../route.ts: analyst-only, enforced here rather than

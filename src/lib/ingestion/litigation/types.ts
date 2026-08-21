@@ -1,3 +1,9 @@
+// Defined here (not in index.ts, where it's re-exported from for every
+// external consumer) so complaintEnrich.ts can use it without a circular
+// import back through index.ts, which re-exports complaintEnrich's own
+// runComplaintEnrichment.
+export const LITIGATION_SOURCE_NAME = "CourtListener RECAP (Hatch-Waxman litigation, D. Del. / D.N.J.)";
+
 // Shape of one skipped/malformed record, kept for logging — never thrown.
 // Mirrors orangeBook/purpleBook/paragraphIV's RowIssue exactly.
 export interface RowIssue {
@@ -40,5 +46,16 @@ export interface SearchResult {
   errorMessage?: string;
   httpStatus?: number;
   /** true only for a 403/401 — almost certainly a bad/missing API key, not a per-company problem. Callers abort the whole run rather than retry per company. */
+  authError?: boolean;
+}
+
+// Result of CourtListenerClient.fetchComplaintEntry — see its doc comment.
+// "not_scraped"/"no_free_text" are expected, common outcomes, not errors —
+// see complaint.ts's ComplaintCheckOutcome for how callers report them.
+export interface ComplaintFetchResult {
+  status: "found" | "not_scraped" | "no_free_text" | "error";
+  plainText?: string;
+  documentNumber?: string | null;
+  errorMessage?: string;
   authError?: boolean;
 }

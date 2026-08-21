@@ -123,6 +123,45 @@ export default async function DataPage() {
       </section>
 
       <section>
+        <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">Litigation complaint-text matching</h2>
+        <div className="grid gap-3 sm:grid-cols-1">
+          <SourceCard
+            source={status.sources[6]}
+            command="npm run enrich:litigation-complaints"
+            pipeline="litigation_complaints"
+            statLabels={["Upgraded (any method)", "Matched via patent", "Matched via brand name", "Not upgraded"]}
+          />
+        </div>
+        <p className="mt-2 text-xs text-paper-500 dark:text-paper-400">
+          Company-name matching alone can&rsquo;t tell which of a company&rsquo;s products a case concerns —
+          this fetches each case&rsquo;s actual complaint (Document 1) from CourtListener&rsquo;s free RECAP
+          archive and extracts the asserted patent number(s) or brand name to confirm the specific product,
+          upgrading the case to high confidence when it can. Free documents only &mdash; cases whose complaint
+          isn&rsquo;t already in RECAP stay at their current confidence rather than triggering a paid PACER
+          purchase. Shares the litigation pipeline&rsquo;s CourtListener rate limit.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold text-paper-900 dark:text-paper-50">Settlement disclosures (SEC EDGAR)</h2>
+        <div className="grid gap-3 sm:grid-cols-1">
+          <SourceCard
+            source={status.sources[5]}
+            command="npm run ingest:settlements"
+            pipeline="settlements"
+            statLabels={["Settlements extracted", "Filings scanned", "Drug links created", "Issues"]}
+          />
+        </div>
+        <p className="mt-2 text-xs text-paper-500 dark:text-paper-400">
+          Searches SEC EDGAR&rsquo;s full-text search by brand name for 10-K/10-Q disclosures of a
+          settlement (a licensed generic-entry date agreed outside of any court ruling &mdash; the kind of
+          fact RECAP docket data alone can&rsquo;t surface), a batch of 15 brands at a time. Lower confidence
+          than every other source here: extracted from filing prose via pattern-matching, not an exact-ID
+          match &mdash; always shown alongside the computed estimate on a product page, never in place of it.
+        </p>
+      </section>
+
+      <section>
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-paper-900 dark:text-paper-50">Patent Term Adjustment enrichment</h2>
           <div className="flex items-center gap-2">

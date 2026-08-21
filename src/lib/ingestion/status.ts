@@ -3,7 +3,8 @@ import { ORANGE_BOOK_SOURCE_NAME } from "./orangeBook";
 import { PURPLE_BOOK_SOURCE_NAME } from "./purpleBook";
 import { PARAGRAPH_IV_SOURCE_NAME } from "./paragraphIV";
 import { PTA_SOURCE_NAME } from "./pta/enrich";
-import { LITIGATION_SOURCE_NAME } from "./litigation";
+import { LITIGATION_SOURCE_NAME, LITIGATION_COMPLAINT_SOURCE_NAME } from "./litigation";
+import { SETTLEMENTS_SOURCE_NAME } from "./settlements";
 
 // Powers the /data operator page — a single place to answer "is the data
 // fresh, and is enrichment actually progressing" without anyone having to
@@ -130,13 +131,18 @@ export interface IngestionStatus {
 }
 
 export async function getIngestionStatus(): Promise<IngestionStatus> {
-  const [orangeBook, purpleBook, paragraphIV, pta, litigation, enrichment] = await Promise.all([
+  const [orangeBook, purpleBook, paragraphIV, pta, litigation, settlements, litigationComplaints, enrichment] = await Promise.all([
     getSourceStatus(ORANGE_BOOK_SOURCE_NAME),
     getSourceStatus(PURPLE_BOOK_SOURCE_NAME),
     getSourceStatus(PARAGRAPH_IV_SOURCE_NAME),
     getSourceStatus(PTA_SOURCE_NAME),
     getSourceStatus(LITIGATION_SOURCE_NAME),
+    getSourceStatus(SETTLEMENTS_SOURCE_NAME),
+    getSourceStatus(LITIGATION_COMPLAINT_SOURCE_NAME),
     getEnrichmentProgress(),
   ]);
-  return { sources: [orangeBook, purpleBook, paragraphIV, pta, litigation], enrichment };
+  // Positional — src/app/data/page.tsx indexes into this array by number
+  // (status.sources[N]), so appending each new source at the end rather
+  // than inserting it earlier keeps every existing index stable.
+  return { sources: [orangeBook, purpleBook, paragraphIV, pta, litigation, settlements, litigationComplaints], enrichment };
 }
