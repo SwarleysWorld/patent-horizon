@@ -21,9 +21,15 @@ function parseObDate(raw: string): Date | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
   if (trimmed.toLowerCase() === PRE_1982_SENTINEL) return null;
-  const date = new Date(trimmed);
-  if (Number.isNaN(date.getTime())) return null;
-  return date;
+  // This string has no explicit timezone, so a plain `new Date(...)` parses
+  // it in the server's LOCAL timezone — meaning ingestion could produce a
+  // different UTC instant (and thus a different calendar date once stored)
+  // depending on where it runs. Same caveat, same fix, as Purple Book's
+  // parsePurpleBookDate/parsePatentListDate: re-anchor to UTC midnight of
+  // the same calendar date local parsing produced.
+  const localParse = new Date(trimmed);
+  if (Number.isNaN(localParse.getTime())) return null;
+  return new Date(Date.UTC(localParse.getFullYear(), localParse.getMonth(), localParse.getDate()));
 }
 
 function parseYFlag(raw: string): boolean {

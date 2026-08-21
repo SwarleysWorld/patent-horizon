@@ -104,7 +104,7 @@ export const AutocompleteQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(25).default(10),
 });
 
-// ---- Query params: GET /api/drugs/[id] -------------------------------
+// ---- Route params: GET /api/drugs/[id], GET /api/biologics/[id] -------
 
 export const DrugIdParamSchema = z.object({
   id: z.string().min(1, "must not be empty"),

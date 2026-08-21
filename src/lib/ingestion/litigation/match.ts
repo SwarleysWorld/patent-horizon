@@ -4,7 +4,7 @@
 // judgment calls, is independently unit-testable with no mocking needed.
 
 import { prisma } from "@/lib/prisma";
-import type { LitigationCourtCode, RecapSearchHit } from "./types";
+import type { LitigationCourtCode } from "./types";
 
 // ---- Party-name extraction from a case caption --------------------------
 
@@ -221,8 +221,4 @@ export function toLitigationCourt(courtId: string): LitigationCourtCode | null {
   if (courtId === "deld") return "DE";
   if (courtId === "njd") return "NJ";
   return null; // defensive — the search is already court-scoped to deld,njd, but never trust the source blindly
-}
-
-export function validateHit(hit: RecapSearchHit): LitigationCourtCode | null {
-  return toLitigationCourt(hit.courtId);
 }

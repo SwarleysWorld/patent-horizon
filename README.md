@@ -973,6 +973,46 @@ npm run ingest:litigation -- --limit 5       # a smaller, budget-conscious batch
 npm run ingest:litigation -- --company-id cabc123 --company-id cdef456   # targeted re-check
 ```
 
+## Manual data entry & targeted retrieval
+
+The four pipelines above cover the general case; `/data` also has an
+Analyst-only panel for filling a specific, known gap by hand. The
+motivating example is a real litigation matter an Analyst knows about
+that RECAP/PACER hasn't surfaced yet — but the same panel covers one-off
+Patents, Exclusivities, and Generic Challenge filings too.
+
+Treated internally as a fifth pipeline-shaped module
+(`src/lib/ingestion/manualEntry/`), reusing rather than duplicating what
+the other four already built: `UsptoOdpClient` for a live patent lookup
+(`lookupPatentPreview`), the Paragraph IV pipeline's NDA-matching logic
+for generic-challenge product linking (`previewGenericChallengeMatch`),
+and a new docket-number lookup against CourtListener
+(`lookupDocketPreview`) reusing the litigation pipeline's own
+company-name matching — scored without an assumed "which company did we
+search for" role, since a direct docket lookup has two parties to
+evaluate independently rather than one searched company to place.
+
+Every save runs the same two-step flow: a `preview*` call that only reads
+(never writes), showing the Analyst what would be matched or linked, then
+a `submit*` action that writes only after they've reviewed and confirmed
+it — including the high-confidence auto-matched cases, which still render
+"matched to: `<product>`" before the Save button is enabled.
+
+Every manual write also creates an `IngestionRecord` against a dedicated
+"Manual Entry" `DataSource`, with `enteredByUserId` set to the Analyst who
+entered it — the same append-only provenance log every automated pipeline
+already writes to (see "Provenance" in the Data model section above), not
+a separate mechanism. Product pages mark manually-entered Patents /
+Exclusivities / Generic Challenges / Litigation Cases with a small
+"Manual" badge, visually distinct from automated-pipeline rows so the two
+are never confused for one another. A Generic Challenge or Litigation
+Case entered with no confident product match saves unlinked rather than
+being forced onto a guess; `/data`'s "Unlinked entries" list surfaces
+those for an Analyst to resolve later via the same product picker used
+everywhere else. `/data` also carries a dedicated audit log for this
+feature — what was entered, by whom, when, and what it's currently linked
+to — kept separate from the automated pipelines' own run history.
+
 ## API
 
 The product surface: "show me patents expiring soon, so I can act on generic
@@ -1449,6 +1489,21 @@ dosage forms as of writing); `exclusivityCode` is a live, growing
 vocabulary spanning Orange Book codes (`NCE`, `ODE-*`, `PED`, ...) and the
 new BPCIA codes together.
 
+## Watchlist
+
+Any signed-in user (Subscriber or Analyst) can star a product from its
+detail page or the main table; `/watchlist` lists everything they've
+starred, sorted the same way as the main table (soonest estimated generic
+entry first). Implemented as a single `WatchlistItem` join row per (user,
+product) — `toggleWatchlistAction` (`src/app/watchlist/actions.ts`) does a
+plain existence-check-then-create-or-delete, `requireUser()`-gated the
+same as every other Server Action in this app; no separate "watchlist
+count" or denormalized field to keep in sync. `WatchlistItem` has no
+back-relation to `User` (Better Auth owns that table; see the schema's own
+doc comment against hand-editing it), so a user's display name is
+resolved via a plain `prisma.user.findMany({where:{id:{in:[...]}}})`, not
+a Prisma relation.
+
 ## Web UI
 
 The primary screen — `/` — is the thing a pharma business analyst is meant
@@ -1687,17 +1742,20 @@ src/app/drugs/[id]/        Drug detail screen: full patent/exclusivity picture
 src/app/biologics/[id]/    Biologic detail screen: same, plus the BPCIA reference-product network
 src/app/login/, signup/    Sign in / create account pages
 src/app/team/              Analyst-only user management (page.tsx + Server Actions in actions.ts)
-src/app/data/              Analyst-only ingestion/enrichment status page — see "Operating this yourself"
+src/app/data/              Analyst-only ingestion/enrichment status page, run-it-yourself trigger, and manual data entry — see "Operating this yourself" and "Manual data entry"
+src/app/watchlist/         Signed-in-user watchlist page + toggle Server Action — see "Watchlist"
 src/app/api/auth/[...all]/ Better Auth's own routes (sign-in, sign-up, session, admin ops, ...)
 src/app/api/health/        GET /api/health — DB connectivity check
 src/app/api/drugs/         GET /api/drugs (unified search), /[id], /filter-options, /export
 src/app/api/biologics/     GET /api/biologics/[id] — biologic detail
 src/app/api/search/        GET /api/search/autocomplete
+src/app/api/data/          POST /api/data/ingest — Analyst-only pipeline trigger, see "Operating this yourself"
 src/app/api/openapi.json/  Serves the generated OpenAPI 3.1 spec
-src/app/docs/              Interactive API docs (Scalar), reads the spec above
+src/app/docs/              Interactive API docs (Scalar), reads the spec above — intentionally public, see proxy.ts
 src/proxy.ts               Optimistic signed-out redirect (Next 16's "middleware", renamed)
 src/components/auth/       Login/signup forms, header user menu, team management table
 src/components/drugs/      UI: table, filter bar (incl. MultiSelectFilter), detail-page cards, badges
+src/components/data/       Manual-entry forms, product picker, unlinked-entries list, audit log — see "Manual data entry"
 src/lib/auth.ts            Better Auth server config (roles, hooks, plugins)
 src/lib/auth-client.ts     Better Auth client (used by login/signup/team UI)
 src/lib/session.ts         requireUser()/requireAnalyst()/getSessionUser() — the real access control
@@ -1708,16 +1766,21 @@ src/lib/api/               Shared API infra: error envelope, query-param parsing
 src/lib/drugs/             Zod schemas + unified search/detail queries backing the API and UI
 src/lib/classification/    Modality/drugClass heuristics, shared by both ingestion pipelines
 src/lib/openapi/           Builds the OpenAPI doc from the Zod schemas above
-src/lib/ingestion/shared.ts     mapWithConcurrency/dedupeByKey — shared by both pipelines below
+src/lib/ingestion/shared.ts     mapWithConcurrency/dedupeByKey — shared across the pipelines below
+src/lib/ingestion/orchestrator.ts  In-process trigger + concurrency guard behind the /data "run it yourself" button
 src/lib/ingestion/orangeBook/   Orange Book (small-molecule) ingestion pipeline
 src/lib/ingestion/purpleBook/   Purple Book (biologics) ingestion pipeline — product CSV + patent-list HTML
 src/lib/ingestion/paragraphIV/  Paragraph IV generic-challenge ingestion — PDF scrape/parse/load
 src/lib/ingestion/pta/     USPTO Patent Term Adjustment enrichment (client/enrich/orchestrate) — both sources
+src/lib/ingestion/litigation/   Federal Hatch-Waxman/ANDA litigation tracking (CourtListener RECAP)
+src/lib/ingestion/manualEntry/  Fifth, human-driven "pipeline" behind the manual data entry panel — see "Manual data entry"
 scripts/ingest-orange-book.ts   CLI entrypoint: npm run ingest:orange-book
 scripts/ingest-purple-book.ts   CLI entrypoint: npm run ingest:purple-book
 scripts/ingest-paragraph-iv.ts  CLI entrypoint: npm run ingest:paragraph-iv
+scripts/ingest-litigation.ts    CLI entrypoint: npm run ingest:litigation
 scripts/enrich-pta.ts      CLI entrypoint: npm run enrich:pta
 scripts/classify-drugs.ts  CLI entrypoint: npm run classify:drugs (both sources)
+scripts/refresh-data.ts    CLI entrypoint: npm run refresh:data (all three FDA ingests + classification)
 tests/                     Vitest suite — runs against a real, separate test database
 src/generated/prisma/      Generated Prisma Client (git-ignored, regenerated on install)
 docker-compose.yml         Optional: run Postgres in Docker instead of natively
@@ -1814,7 +1877,7 @@ The day-to-day loop for whoever owns this product — no code changes needed for
 
 4. **Watch it happen.** Sign in as an Analyst and open **`/data`** — shows when each source was last refreshed and what it loaded, plus live enrichment progress (overall and per-source), refreshing itself every 20 seconds while the tab is open. No terminal or database access needed; this is the page to bookmark and leave open during a long enrichment run.
 
-There's deliberately no "click a button to start ingestion" control on that page — these are commands you run, not background jobs a web request kicks off, since a multi-hour process doesn't fit a normal request/response cycle (and would silently fail on most hosting platforms' request timeouts). `/data` is purely for watching; the commands above are for doing.
+`/data` also has an Analyst-only "run it yourself" control that triggers all four pipelines together or one at a time from the browser, via `POST /api/data/ingest` (`src/lib/ingestion/orchestrator.ts`) — for the common case of kicking off a run without a terminal open. It calls the exact same pipeline functions the CLI commands above call, in-process (not a subprocess shell-out), with an in-memory + DB-backed guard against starting a second concurrent run of the same pipeline; session- and Analyst-gated the same as every other mutating endpoint in this app. A run started this way shows up in the same `/data` progress view either way. For anything long enough to risk a hosting platform's request timeout, or that needs to run unattended on a schedule, the CLI commands above (or a process supervisor) are still the more robust choice — the button is a convenience on top of them, not a replacement.
 
 ## Useful commands
 
@@ -1832,7 +1895,9 @@ npm run ingest:purple-book -- --url <csv-url>          # load from an explicit m
 npm run ingest:purple-book -- --skip-patent-list       # product data only, skip the HTML scrape
 npm run ingest:paragraph-iv           # scrape FDA's page + load the current Paragraph IV Certifications List PDF
 npm run ingest:paragraph-iv -- --url <pdf-url>         # load from an explicit PDF URL instead
-npm run refresh:data                  # all three ingests + classification, in order, in one command
+npm run ingest:litigation             # next batch of 25 oldest/never-checked companies (CourtListener RECAP)
+npm run ingest:litigation -- --limit 5                 # a smaller, budget-conscious batch
+npm run refresh:data                  # all three FDA ingests + classification, in order, in one command
 npm run enrich:pta                    # enrich all unenriched patents with USPTO PTA data (both sources)
 npm run enrich:pta -- --limit 20      # sample run: next 20 patents only
 npm run classify:drugs                # backfill modality/drugClass for existing drugs + biologics

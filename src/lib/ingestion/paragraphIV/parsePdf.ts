@@ -1,23 +1,37 @@
 // Parses FDA's Paragraph IV Patent Certifications List PDF.
 //
 // FDA's PDF has no exposed text-based table markup — table structure is
-// implied by (a) an invisible clip-path rectangle per cell, used to keep
-// wrapped text from bleeding into the next column, and (b) consistent
-// column x-positions repeated identically on every page (confirmed
-// directly against pages 1, 2, 50, and 96 of a real download — pixel-
-// identical header positions on all four). This parser uses those clip
-// rectangles as the authoritative row/column geometry — the same
-// information a human eye uses to read the table, extracted from the
-// PDF's own drawing commands via pdfjs-dist's operator list, rather than
-// guessing row boundaries from line-spacing heuristics (which breaks on
-// cells that wrap across a different number of lines than their
+// implied by (a) an invisible full-width background rectangle behind each
+// row (used purely to shade alternating rows), and (b) consistent column
+// x-positions repeated identically on every page (confirmed directly
+// against pages 1, 2, 50, and 96 of a real download — pixel-identical
+// header positions on all four). Row boundaries come from (a); column
+// assignment comes from each text item's own x-position against the
+// header-derived column boundaries — extracted from the PDF's own drawing
+// commands and text-item positions via pdfjs-dist's operator list, rather
+// than guessing row boundaries from line-spacing heuristics (which breaks
+// on cells that wrap across a different number of lines than their
 // neighbors — verified this exact failure mode during development).
 //
-// This whole approach was validated against a real downloaded copy of the
-// PDF before being written here: reconstructed row count matched a
-// reference extraction exactly (1,632/1,632), and cell content matched
-// byte-for-byte on 1,626/1,632 rows, with the remaining 6 differing only
-// by a missing inter-word space in a free-text cell.
+// An earlier version of this parser keyed column assignment off a
+// per-cell clip rectangle instead of each item's own x-position. FDA's PDF
+// only draws that per-cell rect for a cell whose content needs
+// wrap-clipping — a short or empty cell has no rect of its own — so that
+// approach silently broke once enough rows in a given file had no
+// individual per-cell rects to key off, and fell back to the row's own
+// full-width background rect, corrupting many rows by merging every
+// column's text into column 0. Confirmed via a live download: the
+// full-width background rect is reliably present exactly once per row,
+// with no gaps or duplicates, across pages 1, 2, 3, 50, and 96 — it's used
+// for that one purpose now, not for column geometry.
+//
+// The original per-cell-rect approach was validated against a real
+// downloaded copy of the PDF before being written here: reconstructed row
+// count matched a reference extraction exactly (1,632/1,632), and cell
+// content matched byte-for-byte on 1,626/1,632 rows, with the remaining 6
+// differing only by a missing inter-word space in a free-text cell. Any
+// future regression should be re-validated the same way against a fresh
+// download, not assumed away.
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { DecisionHistoryEntry, ParsedChallenge, ParseResult, PivDecisionStatus, RowIssue } from "./types";
 
@@ -157,12 +171,12 @@ function colIndexForX(x: number, bounds: number[]): number {
   return bounds.length - 2;
 }
 
-function cellText(items: TextItem[], rect: CellRect): string {
-  const inCell = items.filter(
-    (it) => it.x >= rect.x1 - 1 && it.x < rect.x2 + 1 && it.y >= rect.y1 - 1 && it.y < rect.y2 + 1,
-  );
+// Joins a pre-selected set of text items (already scoped to one row's y-band
+// and one column's x-range — see extractRawRows below) into that cell's
+// text, preserving line order top-to-bottom.
+function linesFromItems(cellItems: TextItem[]): string {
   const lineMap = new Map<number, TextItem[]>();
-  for (const it of inCell) {
+  for (const it of cellItems) {
     const y = Math.round(it.y);
     (lineMap.get(y) ?? lineMap.set(y, []).get(y)!).push(it);
   }
@@ -186,11 +200,31 @@ function cellText(items: TextItem[], rect: CellRect): string {
     .join("\n");
 }
 
+// Real column widths top out around ~105pt; a genuine row's background
+// band spans nearly the whole ~680pt table width — this floor cleanly
+// separates the two kinds of rect this page draws.
+const ROW_BAND_MIN_WIDTH = 400;
+const ITEM_Y_TOLERANCE = 0.75;
+
 // Extracts the raw 11-column table, one string array per row, across every
 // page. Rows with fewer than 11 non-blank cells still come out as a full
 // 11-element array (blank strings for unpopulated columns) — most rows
 // have several blank trailing columns representing a genuinely open/
 // unresolved challenge, not missing data (see README).
+//
+// Column assignment is keyed off each TEXT ITEM's own x-position against
+// the header-derived column boundaries, not off a per-cell clip rect —
+// confirmed via a live download that FDA's PDF only draws an individual
+// clip rect for a cell whose content needs wrap-clipping; a short or empty
+// cell gets no rect of its own at all. Keying column assignment to those
+// rects (the original approach) meant a whole row's text fell through to
+// whichever rect happened to cover it — usually the row's own full-width
+// background rect, which resolves to column 0 and pulls in every other
+// column's text with it. That background rect — confirmed present exactly
+// once per row, with no gaps or duplicates, across pages 1, 2, 3, 50, and
+// 96 of a live download — is kept on for exactly one job now: giving each
+// row's y-band, which is the one thing per-cell rects can't be trusted to
+// provide reliably.
 async function extractRawRows(pdfBytes: Buffer): Promise<string[][]> {
   const doc = await loadDocument(pdfBytes);
   const page1 = await doc.getPage(1);
@@ -205,21 +239,27 @@ async function extractRawRows(pdfBytes: Buffer): Promise<string[][]> {
     const page = pageNum === 1 ? page1 : await doc.getPage(pageNum);
     const [items, rects] = await Promise.all([pageNum === 1 ? Promise.resolve(page1Items) : getPageItems(page), getCellRects(page)]);
 
-    const rowRects = rects.filter((r) => r.y2 <= dividerY + 0.5 && r.y1 >= 45 && r.y2 - r.y1 > 8 && r.x2 - r.x1 > 15);
-    const groups = new Map<string, CellRect[]>();
-    for (const r of rowRects) {
+    const rowBandRects = rects.filter(
+      (r) => r.y2 <= dividerY + 0.5 && r.y1 >= 45 && r.y2 - r.y1 > 8 && r.y2 - r.y1 < 100 && r.x2 - r.x1 > ROW_BAND_MIN_WIDTH,
+    );
+    // Defensive de-dup keyed by y-band, keeping the widest rect per band —
+    // in practice exactly one wide rect exists per row (confirmed above),
+    // but this avoids double-emitting a row if that ever isn't true.
+    const bandByKey = new Map<string, CellRect>();
+    for (const r of rowBandRects) {
       const key = `${r.y1.toFixed(1)}_${r.y2.toFixed(1)}`;
-      (groups.get(key) ?? groups.set(key, []).get(key)!).push(r);
+      const existing = bandByKey.get(key);
+      if (!existing || r.x2 - r.x1 > existing.x2 - existing.x1) bandByKey.set(key, r);
     }
-    const orderedGroups = [...groups.values()].sort((a, b) => b[0].y2 - a[0].y2);
+    const orderedBands = [...bandByKey.values()].sort((a, b) => b.y2 - a.y2); // top to bottom
 
-    for (const cells of orderedGroups) {
-      const rowCols: string[] = Array.from({ length: NUM_COLUMNS }, () => "");
-      for (const cell of cells) {
-        const idx = colIndexForX(cell.x1, columnBounds);
-        rowCols[idx] = cellText(items, cell);
+    for (const band of orderedBands) {
+      const rowItems = items.filter((it) => it.y >= band.y1 - ITEM_Y_TOLERANCE && it.y <= band.y2 + ITEM_Y_TOLERANCE);
+      const columnItems: TextItem[][] = Array.from({ length: NUM_COLUMNS }, () => []);
+      for (const it of rowItems) {
+        columnItems[colIndexForX(it.x, columnBounds)].push(it);
       }
-      rows.push(rowCols);
+      rows.push(columnItems.map((cellItems) => linesFromItems(cellItems)));
     }
   }
   return rows;

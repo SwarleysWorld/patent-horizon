@@ -56,9 +56,26 @@ export async function selectCandidatePatents(
   });
 }
 
+// A computed effective date this far past the existing (Orange/Purple
+// Book-listed) nominal is treated as suspect rather than applied — see the
+// "flagged" branch in enrichOnePatent below. Chosen well above any
+// plausible real PTA grant (the statute's own delay categories rarely
+// stack past a few years even in extreme cases) but comfortably below a
+// confirmed real-world instance of this exact failure mode: a continuation
+// application (USPTO patent 12678442, the JENTADUETO family) whose own
+// filing date is ~15 years (5,524 days) later than its earliest
+// priority-claimed filing date, producing a wildly overstated "fresh
+// filing date + 20y" baseline. That's the known cause — this patent's
+// child application inherits the original's term rather than getting a
+// fresh 20 years from its own later filing date — and it isn't modeled
+// here (see README); this threshold only stops the bad number from being
+// silently written, it doesn't compute the correct one.
+const SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS = 3650;
+
 export type EnrichOutcome =
   | { kind: "updated"; ptaDays: number; filingDate: Date; before: { nominal: Date; effective: Date; adjustment: number | null }; after: { effective: Date; adjustment: number } }
   | { kind: "no_data"; reason: string }
+  | { kind: "flagged"; reason: string; filingDate: Date; ptaDays: number; existingNominal: Date; computedEffective: Date; gapDays: number }
   | { kind: "error"; message: string; authError?: boolean };
 
 export async function enrichOnePatent(
@@ -118,6 +135,33 @@ export async function enrichOnePatent(
   }
 
   const expiryAdjustmentDays = daysBetween(patent.nominalExpiryDate, effectiveExpiryDate);
+
+  if (expiryAdjustmentDays > SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS) {
+    // Still write a record — checked, not skipped — so this patent doesn't
+    // get re-selected as a candidate on every future run just to compute
+    // the same suspect result again. The Patent row itself is left
+    // untouched: whatever was there before (typically Orange/Purple
+    // Book's own listed date) stays the visible figure until a human
+    // resolves this.
+    await prisma.ingestionRecord.create({
+      data: {
+        sourceId,
+        patentId: patent.id,
+        verifiedAt,
+        changeNote: `USPTO PTA=${ptaDays}d, filingDate(${result.filingDate}) + ${STATUTORY_TERM_YEARS}y computes an effective date ${expiryAdjustmentDays}d (${(expiryAdjustmentDays / 365).toFixed(1)}y) past the existing listed date — beyond the ${SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS}d sanity threshold, likely a continuation/divisional application whose own filing date isn't its term's true starting point (see README). Flagged for manual review; existing dates left unchanged.`,
+        rawPayload: JSON.parse(JSON.stringify(result.raw)),
+      },
+    });
+    return {
+      kind: "flagged",
+      reason: `computed effective date is ${expiryAdjustmentDays}d past the existing listed date — beyond the ${SUSPICIOUS_ADJUSTMENT_THRESHOLD_DAYS}d sanity threshold`,
+      filingDate,
+      ptaDays,
+      existingNominal: patent.nominalExpiryDate,
+      computedEffective: effectiveExpiryDate,
+      gapDays: expiryAdjustmentDays,
+    };
+  }
 
   await prisma.$transaction([
     prisma.patent.update({

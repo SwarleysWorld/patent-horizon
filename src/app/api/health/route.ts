@@ -6,13 +6,9 @@ export async function GET() {
     await prisma.$queryRaw`SELECT 1`;
     return NextResponse.json({ status: "ok", database: "connected" });
   } catch (error) {
-    return NextResponse.json(
-      {
-        status: "error",
-        database: "disconnected",
-        message: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 503 },
-    );
+    // Unauthenticated endpoint — never leak raw error internals (connection
+    // strings, SQL, stack traces) to the caller. Log server-side instead.
+    console.error(error);
+    return NextResponse.json({ status: "error", database: "disconnected" }, { status: 503 });
   }
 }

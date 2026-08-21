@@ -27,6 +27,7 @@ export interface PtaRunSummary {
   candidateCount: number;
   updated: number;
   noData: number;
+  flagged: number;
   errors: number;
   results: PtaRunResultRow[];
   errorMessage?: string;
@@ -55,6 +56,7 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
       candidateCount: 0,
       updated: 0,
       noData: 0,
+      flagged: 0,
       errors: 0,
       results: [],
       errorMessage,
@@ -67,6 +69,7 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
   const results: PtaRunResultRow[] = [];
   let updated = 0;
   let noData = 0;
+  let flagged = 0;
   let errors = 0;
   let abortedOnAuthError = false;
   const verifiedAt = new Date();
@@ -85,6 +88,7 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
 
     if (outcome.kind === "updated") updated++;
     else if (outcome.kind === "no_data") noData++;
+    else if (outcome.kind === "flagged") flagged++;
     else {
       errors++;
       if (outcome.authError) {
@@ -98,7 +102,7 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
 
   const finishedAt = new Date();
   const status: PtaRunSummary["status"] =
-    errors === 0 ? "SUCCESS" : updated + noData > 0 ? "PARTIAL" : "FAILED";
+    errors === 0 ? "SUCCESS" : updated + noData + flagged > 0 ? "PARTIAL" : "FAILED";
 
   await prisma.ingestionRun.update({
     where: { id: run.id },
@@ -106,9 +110,9 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
       status,
       finishedAt,
       patentsUpserted: updated,
-      rowsSkipped: noData + errors,
+      rowsSkipped: noData + flagged + errors,
       summary: JSON.parse(
-        JSON.stringify({ candidateCount: candidates.length, updated, noData, errors, abortedOnAuthError }),
+        JSON.stringify({ candidateCount: candidates.length, updated, noData, flagged, errors, abortedOnAuthError }),
       ),
     },
   });
@@ -122,6 +126,7 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
     candidateCount: candidates.length,
     updated,
     noData,
+    flagged,
     errors,
     results,
     errorMessage: abortedOnAuthError ? "aborted after an auth (403) error — check USPTO_ODP_API_KEY" : undefined,

@@ -57,6 +57,7 @@ async function main() {
   console.log(`candidates examined: ${summary.candidateCount}`);
   console.log(`  updated (real PTA data applied): ${summary.updated}`);
   console.log(`  no data (checked, none available): ${summary.noData}`);
+  console.log(`  flagged (suspiciously large gap, needs manual review): ${summary.flagged}`);
   console.log(`  errors: ${summary.errors}`);
   if (summary.errorMessage) console.log(`  ${summary.errorMessage}`);
 
@@ -82,6 +83,13 @@ async function main() {
         console.log(`  effective, after:         ${fmtDate(after.effective)}  (adjustment: ${after.adjustment}d vs. listed)`);
       } else if (row.outcome.kind === "no_data") {
         console.log(`\n${label}\n  no data: ${row.outcome.reason}`);
+      } else if (row.outcome.kind === "flagged") {
+        const { existingNominal, computedEffective, gapDays, ptaDays, filingDate } = row.outcome;
+        console.log(`\n${label}\n  FLAGGED, not applied: ${row.outcome.reason}`);
+        console.log(`  filing date (USPTO):      ${fmtDate(filingDate)}`);
+        console.log(`  USPTO PTA days:           ${ptaDays}`);
+        console.log(`  existing listed date:     ${fmtDate(existingNominal)}  (left unchanged)`);
+        console.log(`  computed (not written):   ${fmtDate(computedEffective)}  (${gapDays}d gap)`);
       } else {
         console.log(`\n${label}\n  ERROR: ${row.outcome.message}`);
       }

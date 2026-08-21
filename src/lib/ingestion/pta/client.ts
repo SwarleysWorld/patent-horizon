@@ -75,6 +75,15 @@ export class UsptoOdpClient {
         };
       }
 
+      if (res.status === 404) {
+        // ODP's real behavior for "no record for this patent" — confirmed
+        // live against known out-of-coverage patents (pre-2001 filings):
+        // it returns 404, not 200 + an empty patentFileWrapperDataBag as
+        // the bag.length === 0 branch below assumes. Both are the same
+        // "not found" outcome; only the transport shape differs.
+        return { status: "not_found" };
+      }
+
       if (!res.ok) {
         return { status: "error", httpStatus: res.status, errorMessage: `HTTP ${res.status}` };
       }

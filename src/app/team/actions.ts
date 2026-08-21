@@ -24,7 +24,8 @@ export async function setUserRoleAction(userId: string, role: "admin" | "user"):
   try {
     await auth.api.setRole({ body: { userId, role }, headers: await headers() });
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : "Failed to update role." };
+    console.error(error);
+    return { ok: false, message: "Failed to update role." };
   }
 
   revalidatePath("/team");
@@ -41,7 +42,8 @@ export async function setUserPasswordAction(userId: string, newPassword: string)
   try {
     await auth.api.setUserPassword({ body: { userId, newPassword }, headers: await headers() });
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : "Failed to set password." };
+    console.error(error);
+    return { ok: false, message: "Failed to set password." };
   }
 
   return { ok: true };
@@ -57,7 +59,8 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
   try {
     await auth.api.removeUser({ body: { userId }, headers: await headers() });
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : "Failed to remove user." };
+    console.error(error);
+    return { ok: false, message: "Failed to remove user." };
   }
 
   revalidatePath("/team");
