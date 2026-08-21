@@ -1,13 +1,19 @@
 import clsx from "clsx";
 import type { DataSourceStatus } from "@/lib/ingestion/status";
 import { TriggerButton, type TriggerPipelineKey } from "./TriggerButton";
+import { StopButton, type StoppablePipelineKey } from "./StopButton";
 
 const STATUS_STYLES: Record<string, string> = {
   SUCCESS: "bg-statute-50 text-statute-700 ring-statute-600/20 dark:bg-statute-500/10 dark:text-statute-400 dark:ring-statute-500/20",
   PARTIAL: "bg-flag-50 text-flag-700 ring-flag-600/20 dark:bg-flag-500/10 dark:text-flag-400 dark:ring-flag-500/20",
   FAILED: "bg-rust-50 text-rust-700 ring-rust-600/20 dark:bg-rust-500/10 dark:text-rust-400 dark:ring-rust-500/20",
   RUNNING: "bg-ledger-50 text-ledger-700 ring-ledger-600/20 dark:bg-ledger-500/10 dark:text-ledger-400 dark:ring-ledger-500/20",
+  CANCELLED: "bg-paper-100 text-paper-600 ring-paper-300 dark:bg-paper-800/50 dark:text-paper-400 dark:ring-paper-700",
 };
+
+// Every real pipeline supports stopping mid-run now (see cancellation.ts
+// and each pipeline's own run loop) — "all" is the only TriggerPipelineKey
+// that isn't a real pipeline, and SourceCard is never given that one.
 
 function formatDateTime(d: Date | null): string {
   if (!d) return "—";
@@ -83,8 +89,12 @@ export function SourceCard({
           <h3 className="text-sm font-semibold text-paper-900 dark:text-paper-50">{source.name}</h3>
           {run && <StatusBadge status={run.status} />}
         </div>
-        {pipeline && (
-          <TriggerButton pipeline={pipeline} disabled={isRunning || Boolean(blockedByOtherRun)} label="Run now" />
+        {pipeline && isRunning ? (
+          <StopButton pipeline={pipeline as StoppablePipelineKey} />
+        ) : (
+          pipeline && (
+            <TriggerButton pipeline={pipeline} disabled={isRunning || Boolean(blockedByOtherRun)} label="Run now" />
+          )
         )}
       </div>
       {!run ? (
@@ -101,6 +111,12 @@ export function SourceCard({
               </>
             )}
           </p>
+          {run.status === "CANCELLED" && (
+            <p className="mt-2 rounded bg-paper-100 px-2 py-1.5 text-xs text-paper-600 dark:bg-paper-800/50 dark:text-paper-400">
+              Stopped by request before finishing. Whatever it had already written stays &mdash; re-run to pick up
+              where it left off.
+            </p>
+          )}
           {errorMessage && (
             <p className="mt-2 rounded bg-rust-50 px-2 py-1.5 text-xs text-rust-700 dark:bg-rust-500/10 dark:text-rust-400">
               {errorMessage}

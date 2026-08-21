@@ -95,9 +95,9 @@ export async function matchDrugs(challenge: { rldNdaNumber: string | null; dosag
 
 export async function loadParagraphIVData(
   parsed: ParsedChallenge[],
-  opts: { sourceId: string; verifiedAt: Date; issues: RowIssue[] },
+  opts: { sourceId: string; verifiedAt: Date; issues: RowIssue[]; signal?: AbortSignal },
 ): Promise<LoadResult> {
-  const { sourceId, verifiedAt, issues } = opts;
+  const { sourceId, verifiedAt, issues, signal } = opts;
 
   const challenges = dedupeByKey(parsed, naturalKey);
   if (challenges.length !== parsed.length) {
@@ -195,7 +195,7 @@ export async function loadParagraphIVData(
         raw: `${c.rldName} / ${c.activeIngredient} / ${c.dosageForm} / ${c.strength}`,
       });
     }
-  });
+  }, signal);
 
   const ingestionRecords = await prisma.ingestionRecord.createMany({
     data: challengeIds.map((genericChallengeId) => ({ sourceId, genericChallengeId, verifiedAt })),

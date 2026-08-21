@@ -4,6 +4,7 @@ import { SourceCard } from "@/components/data/SourceCard";
 import { ProgressBar } from "@/components/data/ProgressBar";
 import { AutoRefresh } from "@/components/data/AutoRefresh";
 import { TriggerButton } from "@/components/data/TriggerButton";
+import { StopButton } from "@/components/data/StopButton";
 import { ManualEntryPanel } from "@/components/data/ManualEntryPanel";
 import { UnlinkedEntriesList } from "@/components/data/UnlinkedEntriesList";
 import { ManualEntryAuditLog } from "@/components/data/ManualEntryAuditLog";
@@ -135,7 +136,11 @@ export default async function DataPage() {
               <span className={`h-1.5 w-1.5 rounded-full ${enrichment.recentActivity ? "bg-statute-500 animate-pulse" : "bg-paper-400"}`} />
               {enrichment.recentActivity ? "Running now" : "Idle"}
             </span>
-            <TriggerButton pipeline="pta" label="Run now" disabled={status.sources[3].lastRun?.status === "RUNNING"} />
+            {status.sources[3].lastRun?.status === "RUNNING" ? (
+              <StopButton pipeline="pta" />
+            ) : (
+              <TriggerButton pipeline="pta" label="Run now" disabled={false} />
+            )}
           </div>
         </div>
         <div className="rounded-lg border border-paper-200 bg-paper-100 p-4 dark:border-paper-800 dark:bg-paper-950">
@@ -150,6 +155,12 @@ export default async function DataPage() {
           {status.sources[3].lastRun?.status === "FAILED" && (
             <p className="mb-3 rounded bg-rust-50 px-2 py-1.5 text-xs text-rust-700 dark:bg-rust-500/10 dark:text-rust-400">
               {errorMessageOf(status.sources[3].lastRun?.summary)}
+            </p>
+          )}
+          {status.sources[3].lastRun?.status === "CANCELLED" && (
+            <p className="mb-3 rounded bg-paper-100 px-2 py-1.5 text-xs text-paper-600 dark:bg-paper-800/50 dark:text-paper-400">
+              Stopped by request before finishing. Whatever it had already written stays &mdash; run it again to
+              pick up where it left off.
             </p>
           )}
           <div className="flex flex-col gap-3">

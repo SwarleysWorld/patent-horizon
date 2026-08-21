@@ -28,8 +28,8 @@ const BROWSER_LIKE_HEADERS = {
   Accept: "text/html",
 };
 
-export async function fetchPatentListHtml(url: string = PATENT_LIST_URL): Promise<string> {
-  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS });
+export async function fetchPatentListHtml(url: string = PATENT_LIST_URL, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS, signal });
   if (!res.ok) {
     throw new Error(`failed to download Purple Book patent list: HTTP ${res.status} ${res.statusText}`);
   }

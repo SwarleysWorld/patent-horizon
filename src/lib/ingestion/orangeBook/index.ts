@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { parseOrangeBookFiles } from "./parse";
 import { loadOrangeBookData } from "./load";
 import type { RowIssue } from "./types";
+import { throwIfCancelled, abortSignalFor, statusForError } from "../cancellation";
 
 export const ORANGE_BOOK_SOURCE_NAME = "FDA Orange Book";
 export const ORANGE_BOOK_DEFAULT_URL = "https://www.fda.gov/media/76860/download?attachment";
@@ -10,7 +11,7 @@ const ORANGE_BOOK_INFO_PAGE = "https://www.fda.gov/drugs/drug-approvals-and-data
 
 export interface IngestionRunSummary {
   runId: string;
-  status: "SUCCESS" | "PARTIAL" | "FAILED";
+  status: "SUCCESS" | "PARTIAL" | "FAILED" | "CANCELLED";
   startedAt: Date;
   finishedAt: Date;
   durationMs: number;
@@ -52,8 +53,8 @@ function categorizeIssues(issues: RowIssue[]): IngestionRunSummary["issueCategor
     }));
 }
 
-async function fetchZipBuffer(url: string): Promise<Buffer> {
-  const res = await fetch(url);
+async function fetchZipBuffer(url: string, signal: AbortSignal): Promise<Buffer> {
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new Error(`failed to download Orange Book zip: HTTP ${res.status} ${res.statusText}`);
   }
@@ -98,20 +99,34 @@ export async function runOrangeBookIngestion(
   });
 
   const startedAt = run.startedAt;
+  // One AbortController for the whole run, not one per phase: its signal
+  // both aborts an in-flight fetch() and is checked (cheaply, no DB round
+  // trip per item) by mapWithConcurrency inside loadOrangeBookData — the
+  // bulk DB-upsert phase is the slowest part of a run by far, and a
+  // Stop click landing during it needs a checkpoint there too, not just
+  // between phases.
+  const ac = abortSignalFor(run.id);
 
   try {
-    const zipBuffer = opts.zipPath
-      ? await (await import("node:fs/promises")).readFile(opts.zipPath)
-      : await fetchZipBuffer(sourceUrl);
+    await throwIfCancelled(run.id);
+    let zipBuffer: Buffer;
+    if (opts.zipPath) {
+      zipBuffer = await (await import("node:fs/promises")).readFile(opts.zipPath);
+    } else {
+      zipBuffer = await fetchZipBuffer(sourceUrl, ac.signal);
+    }
 
+    await throwIfCancelled(run.id);
     const files = extractFiles(zipBuffer);
     const parsed = parseOrangeBookFiles(files);
 
+    await throwIfCancelled(run.id);
     const verifiedAt = new Date();
     const loadResult = await loadOrangeBookData(parsed, {
       sourceId: source.id,
       verifiedAt,
       issues: parsed.issues,
+      signal: ac.signal,
     });
 
     const finishedAt = new Date();
@@ -154,20 +169,24 @@ export async function runOrangeBookIngestion(
     return summary;
   } catch (error) {
     const finishedAt = new Date();
+    const status = statusForError(error);
     const errorMessage = error instanceof Error ? error.message : String(error);
 
     await prisma.ingestionRun.update({
       where: { id: run.id },
       data: {
-        status: "FAILED",
+        status,
         finishedAt,
-        summary: { errorMessage },
+        // Cancellation isn't an error — leave summary.errorMessage unset
+        // so SourceCard's dedicated CANCELLED message shows instead of the
+        // FAILED-styled error box.
+        summary: status === "CANCELLED" ? {} : { errorMessage },
       },
     });
 
     return {
       runId: run.id,
-      status: "FAILED",
+      status,
       startedAt,
       finishedAt,
       durationMs: finishedAt.getTime() - startedAt.getTime(),
@@ -183,5 +202,7 @@ export async function runOrangeBookIngestion(
       issueCategories: [],
       errorMessage,
     };
+  } finally {
+    ac.stop();
   }
 }

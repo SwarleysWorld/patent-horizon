@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { UsptoOdpClient } from "./client";
 import { ensurePtaDataSource, selectCandidatePatents, enrichOnePatent, type EnrichOutcome } from "./enrich";
+import { isCancelRequested } from "../cancellation";
 
 export { PTA_SOURCE_NAME } from "./enrich";
 
@@ -20,7 +21,7 @@ export interface PtaRunResultRow {
 
 export interface PtaRunSummary {
   runId: string;
-  status: "SUCCESS" | "PARTIAL" | "FAILED";
+  status: "SUCCESS" | "PARTIAL" | "FAILED" | "CANCELLED";
   startedAt: Date;
   finishedAt: Date;
   durationMs: number;
@@ -72,11 +73,21 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
   let flagged = 0;
   let errors = 0;
   let abortedOnAuthError = false;
+  let cancelled = false;
   const verifiedAt = new Date();
 
   // Strictly sequential — ODP's rate limit policy is burst=1 (no
-  // concurrent requests per API key at all).
+  // concurrent requests per API key at all). That sequencing is also what
+  // makes a Stop button viable: checking the cancellation flag once per
+  // iteration, between two real awaited requests, notices a stop request
+  // within one patent's worth of latency rather than needing to interrupt
+  // an in-flight request.
   for (const patent of candidates) {
+    if (await isCancelRequested(run.id)) {
+      cancelled = true;
+      break;
+    }
+
     const outcome = await enrichOnePatent(client, source.id, patent, verifiedAt);
     results.push({
       patentId: patent.id,
@@ -101,8 +112,13 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
   }
 
   const finishedAt = new Date();
-  const status: PtaRunSummary["status"] =
-    errors === 0 ? "SUCCESS" : updated + noData + flagged > 0 ? "PARTIAL" : "FAILED";
+  const status: PtaRunSummary["status"] = cancelled
+    ? "CANCELLED"
+    : errors === 0
+      ? "SUCCESS"
+      : updated + noData + flagged > 0
+        ? "PARTIAL"
+        : "FAILED";
 
   await prisma.ingestionRun.update({
     where: { id: run.id },
@@ -112,7 +128,7 @@ export async function runPtaEnrichment(opts: PtaRunOptions = {}): Promise<PtaRun
       patentsUpserted: updated,
       rowsSkipped: noData + flagged + errors,
       summary: JSON.parse(
-        JSON.stringify({ candidateCount: candidates.length, updated, noData, flagged, errors, abortedOnAuthError }),
+        JSON.stringify({ candidateCount: candidates.length, updated, noData, flagged, errors, abortedOnAuthError, cancelled }),
       ),
     },
   });

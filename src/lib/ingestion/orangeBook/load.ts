@@ -21,9 +21,9 @@ export interface LoadResult {
 
 export async function loadOrangeBookData(
   parsed: { products: ParsedProduct[]; patents: ParsedPatent[]; exclusivities: ParsedExclusivity[] },
-  opts: { sourceId: string; verifiedAt: Date; issues: RowIssue[] },
+  opts: { sourceId: string; verifiedAt: Date; issues: RowIssue[]; signal?: AbortSignal },
 ): Promise<LoadResult> {
-  const { sourceId, verifiedAt, issues } = opts;
+  const { sourceId, verifiedAt, issues, signal } = opts;
 
   const products = dedupeByKey(parsed.products, (p) => p.drugKey);
   const patents = dedupeByKey(parsed.patents, (p) => `${p.drugKey}::${p.patentNumber}::${p.useCode}`);
@@ -129,7 +129,7 @@ export async function loadOrangeBookData(
         raw: product.drugKey,
       });
     }
-  });
+  }, signal);
 
   // 3. Patents.
   let patentsUpserted = 0;
@@ -205,7 +205,7 @@ export async function loadOrangeBookData(
         raw: patent.patentNumber,
       });
     }
-  });
+  }, signal);
 
   // 4. Exclusivities.
   let exclusivitiesUpserted = 0;
@@ -251,7 +251,7 @@ export async function loadOrangeBookData(
         raw: excl.code,
       });
     }
-  });
+  }, signal);
 
   // 5. Provenance — one IngestionRecord per successfully touched entity,
   // all sharing this run's verifiedAt timestamp. Written in bulk rather

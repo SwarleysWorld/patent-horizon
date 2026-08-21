@@ -3,6 +3,7 @@ import { parseProductsCsv } from "./parseProducts";
 import { fetchPatentListHtml, parsePatentListHtml, PATENT_LIST_URL } from "./parsePatentList";
 import { loadPurpleBookData } from "./load";
 import type { RowIssue } from "./types";
+import { throwIfCancelled, abortSignalFor, statusForError, isCancelRequested, RunCancelledError } from "../cancellation";
 
 export const PURPLE_BOOK_SOURCE_NAME = "FDA Purple Book";
 const PURPLE_BOOK_INFO_PAGE = "https://purplebooksearch.fda.gov/downloads";
@@ -30,8 +31,8 @@ function previousMonth(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 1, 1));
 }
 
-async function fetchUrl(url: string): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
-  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS });
+async function fetchUrl(url: string, signal: AbortSignal): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
+  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS, signal });
   if (!res.ok) return { ok: false, status: res.status };
   const text = await res.text();
   if (text.includes("FDA Apology") || text.includes("abuse-detection-apology")) {
@@ -45,23 +46,23 @@ async function fetchUrl(url: string): Promise<{ ok: true; text: string } | { ok:
 // month on a 404 rather than hard-failing. Only one fallback step: if the
 // prior month is ALSO missing, something more unusual is going on and
 // that's worth surfacing as a real error rather than guessing further back.
-async function fetchProductsCsv(explicitUrl: string | undefined): Promise<string> {
+async function fetchProductsCsv(explicitUrl: string | undefined, signal: AbortSignal): Promise<string> {
   if (explicitUrl) {
-    const result = await fetchUrl(explicitUrl);
+    const result = await fetchUrl(explicitUrl, signal);
     if (!result.ok) throw new Error(`failed to download Purple Book product data: HTTP ${result.status}`);
     return result.text;
   }
 
   const now = new Date();
   const currentMonthUrl = csvUrlForMonth(now);
-  const current = await fetchUrl(currentMonthUrl);
+  const current = await fetchUrl(currentMonthUrl, signal);
   if (current.ok) return current.text;
   if (current.status !== 404) {
     throw new Error(`failed to download Purple Book product data: HTTP ${current.status} (${currentMonthUrl})`);
   }
 
   const priorMonthUrl = csvUrlForMonth(previousMonth(now));
-  const prior = await fetchUrl(priorMonthUrl);
+  const prior = await fetchUrl(priorMonthUrl, signal);
   if (prior.ok) return prior.text;
   throw new Error(
     `failed to download Purple Book product data: neither the current month (${currentMonthUrl}, HTTP 404) nor the prior month (${priorMonthUrl}, HTTP ${prior.status}) is available — pass --url explicitly`,
@@ -70,7 +71,7 @@ async function fetchProductsCsv(explicitUrl: string | undefined): Promise<string
 
 export interface IngestionRunSummary {
   runId: string;
-  status: "SUCCESS" | "PARTIAL" | "FAILED";
+  status: "SUCCESS" | "PARTIAL" | "FAILED" | "CANCELLED";
   startedAt: Date;
   finishedAt: Date;
   durationMs: number;
@@ -121,9 +122,18 @@ export async function runPurpleBookIngestion(
 
   const run = await prisma.ingestionRun.create({ data: { sourceId: source.id, status: "RUNNING" } });
   const startedAt = run.startedAt;
+  // One AbortController for the whole run, not one per phase: its signal
+  // both aborts an in-flight fetch() and is checked (cheaply, no DB round
+  // trip per item) by mapWithConcurrency inside loadPurpleBookData — the
+  // bulk DB-upsert phase is the slowest part of a run by far, and a Stop
+  // click landing during it needs a checkpoint there too, not just
+  // between phases.
+  const ac = abortSignalFor(run.id);
 
   try {
-    const csvContent = opts.csvContent ?? (await fetchProductsCsv(opts.csvUrl));
+    await throwIfCancelled(run.id);
+    const csvContent = opts.csvContent ?? (await fetchProductsCsv(opts.csvUrl, ac.signal));
+    await throwIfCancelled(run.id);
     const { products, exclusivities, rawCount: productsRaw, issues } = parseProductsCsv(csvContent);
 
     // The patent-list scrape is separate and materially more fragile (HTML
@@ -131,26 +141,35 @@ export async function runPurpleBookIngestion(
     // product CSV. A failure here should never take down the far more
     // valuable product ingestion, so it's isolated in its own try/catch
     // and degrades to "0 patents this run" with a clearly surfaced reason,
-    // rather than failing the whole run.
+    // rather than failing the whole run. A stop request is deliberately
+    // NOT swallowed the same way — it's re-thrown so it still cancels the
+    // whole run instead of quietly turning into "patent list unavailable".
     let patents: Awaited<ReturnType<typeof parsePatentListHtml>>["patents"] = [];
     let patentsRaw = 0;
     let patentListFetchFailed: string | undefined;
     if (!opts.skipPatentList) {
       try {
-        const html = await fetchPatentListHtml();
+        const html = await fetchPatentListHtml(PATENT_LIST_URL, ac.signal);
         const parsed = parsePatentListHtml(html);
         patents = parsed.patents;
         patentsRaw = parsed.rawCount;
         issues.push(...parsed.issues);
       } catch (error) {
+        // A stopped fetch surfaces as the signal's own AbortError, not a
+        // RunCancelledError — check the flag directly rather than the
+        // error's type, so either shape of "this was a stop, not a real
+        // failure" re-throws instead of being swallowed as
+        // patentListFetchFailed.
+        if (error instanceof RunCancelledError || (await isCancelRequested(run.id))) throw new RunCancelledError();
         patentListFetchFailed = error instanceof Error ? error.message : String(error);
       }
     }
 
+    await throwIfCancelled(run.id);
     const verifiedAt = new Date();
     const loadResult = await loadPurpleBookData(
       { products, exclusivities, patents },
-      { sourceId: source.id, verifiedAt, issues },
+      { sourceId: source.id, verifiedAt, issues, signal: ac.signal },
     );
 
     const finishedAt = new Date();
@@ -201,16 +220,20 @@ export async function runPurpleBookIngestion(
     return summary;
   } catch (error) {
     const finishedAt = new Date();
+    const status = statusForError(error);
     const errorMessage = error instanceof Error ? error.message : String(error);
 
     await prisma.ingestionRun.update({
       where: { id: run.id },
-      data: { status: "FAILED", finishedAt, summary: { errorMessage } },
+      // Cancellation isn't an error — leave summary.errorMessage unset so
+      // SourceCard's dedicated CANCELLED message shows instead of the
+      // FAILED-styled error box.
+      data: { status, finishedAt, summary: status === "CANCELLED" ? {} : { errorMessage } },
     });
 
     return {
       runId: run.id,
-      status: "FAILED",
+      status,
       startedAt,
       finishedAt,
       durationMs: finishedAt.getTime() - startedAt.getTime(),
@@ -228,6 +251,8 @@ export async function runPurpleBookIngestion(
       issueCategories: [],
       errorMessage,
     };
+  } finally {
+    ac.stop();
   }
 }
 

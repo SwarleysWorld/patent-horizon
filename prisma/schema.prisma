@@ -672,6 +672,14 @@ enum IngestionRunStatus {
   SUCCESS
   PARTIAL
   FAILED
+  // User-requested stop, not an error — only PTA and litigation check for
+  // this (see src/lib/ingestion/cancellation.ts): both loop one candidate
+  // at a time with a real await between each, the same shape their own
+  // abortedOnAuthError break already used, so mid-run cancellation reuses
+  // that pattern rather than introducing a new one. Orange Book/Purple
+  // Book/Paragraph IV run in seconds as monolithic fetch+parse+load steps
+  // with no such loop to check inside, so they don't support this.
+  CANCELLED
 }
 
 // One row per pipeline execution — the run-level counterpart to
@@ -685,6 +693,18 @@ model IngestionRun {
   status     IngestionRunStatus @default(RUNNING)
   startedAt  DateTime           @default(now())
   finishedAt DateTime?
+
+  // Set by the /data page's Stop button (via /api/data/ingest/stop) while
+  // this run is RUNNING. Deliberately a DB column, not an in-memory flag —
+  // an in-memory Set keyed by pipeline name looked simpler at first, but
+  // Next's dev bundler can give two different route files (the trigger
+  // route and the stop route both import orchestrator.ts) separately
+  // bundled copies of the same shared module, so a flag set from one
+  // route's copy was invisible to the pipeline running under the other's —
+  // confirmed directly: a Stop call returned 202 but the run finished
+  // normally 40s later, never having seen cancelRequested flip. The DB is
+  // the one thing both routes are already proven to share reliably.
+  cancelRequested Boolean @default(false)
 
   drugsUpserted         Int @default(0)
   patentsUpserted       Int @default(0)

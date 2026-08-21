@@ -29,9 +29,9 @@ export async function loadPurpleBookData(
     exclusivities: ParsedBiologicExclusivity[];
     patents: ParsedBiologicPatent[];
   },
-  opts: { sourceId: string; verifiedAt: Date; issues: RowIssue[] },
+  opts: { sourceId: string; verifiedAt: Date; issues: RowIssue[]; signal?: AbortSignal },
 ): Promise<LoadResult> {
-  const { sourceId, verifiedAt, issues } = opts;
+  const { sourceId, verifiedAt, issues, signal } = opts;
 
   const products = dedupeByKey(parsed.products, (p) => p.blaProductKey);
   const exclusivities = dedupeByKey(
@@ -135,7 +135,7 @@ export async function loadPurpleBookData(
         raw: product.blaProductKey,
       });
     }
-  });
+  }, signal);
 
   // 3. Reference-product resolution — a second pass, now that every
   // product in this run has an id. Purple Book gives the reference
@@ -207,7 +207,7 @@ export async function loadPurpleBookData(
         raw: excl.code,
       });
     }
-  });
+  }, signal);
 
   // 5. Patents — from the separate, much sparser patent-list source (see
   // parsePatentList.ts). Matched by BLA number only: the patent list has
@@ -281,7 +281,7 @@ export async function loadPurpleBookData(
         raw: patent.patentNumber,
       });
     }
-  });
+  }, signal);
 
   // 6. Provenance — one IngestionRecord per successfully touched entity.
   const productIds = [...productIdByKey.values()];

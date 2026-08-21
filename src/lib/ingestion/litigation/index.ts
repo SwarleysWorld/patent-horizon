@@ -10,6 +10,7 @@ import { loadHitsForCompany } from "./load";
 import type { CompanyRef, MatchConfidenceTier } from "./match";
 import { normalizeCompanyName } from "./match";
 import type { RowIssue } from "./types";
+import { isCancelRequested } from "../cancellation";
 
 export const LITIGATION_SOURCE_NAME = "CourtListener RECAP (Hatch-Waxman litigation, D. Del. / D.N.J.)";
 const COURTLISTENER_INFO_URL = "https://www.courtlistener.com/help/api/rest/v4/";
@@ -27,7 +28,7 @@ export interface LitigationRunOptions {
 
 export interface LitigationRunSummary {
   runId: string;
-  status: "SUCCESS" | "PARTIAL" | "FAILED";
+  status: "SUCCESS" | "PARTIAL" | "FAILED" | "CANCELLED";
   startedAt: Date;
   finishedAt: Date;
   durationMs: number;
@@ -129,10 +130,19 @@ export async function runLitigationIngestion(opts: LitigationRunOptions = {}): P
   let ingestionRecordsCreated = 0;
   const confidenceCounts: Record<MatchConfidenceTier, number> = { HIGH: 0, MEDIUM: 0, LOW: 0 };
   let abortedOnAuthError = false;
+  let cancelled = false;
 
   // Strictly sequential — CourtListener's rate limit is a shared 5 req/min
-  // budget across the whole run, not per-company.
+  // budget across the whole run, not per-company. That sequencing is also
+  // what makes a Stop button viable: checking the cancellation flag once
+  // per company, between two real awaited (and rate-limited) requests,
+  // notices a stop request within one company's worth of latency.
   for (const company of candidates) {
+    if (await isCancelRequested(run.id)) {
+      cancelled = true;
+      break;
+    }
+
     const result = await client.searchHatchWaxmanCases(company.name);
 
     if (result.status === "error") {
@@ -161,7 +171,13 @@ export async function runLitigationIngestion(opts: LitigationRunOptions = {}): P
   }
 
   const finishedAt = new Date();
-  const status: LitigationRunSummary["status"] = abortedOnAuthError ? "FAILED" : issues.length === 0 ? "SUCCESS" : "PARTIAL";
+  const status: LitigationRunSummary["status"] = cancelled
+    ? "CANCELLED"
+    : abortedOnAuthError
+      ? "FAILED"
+      : issues.length === 0
+        ? "SUCCESS"
+        : "PARTIAL";
 
   await prisma.ingestionRun.update({
     where: { id: run.id },
@@ -178,7 +194,9 @@ export async function runLitigationIngestion(opts: LitigationRunOptions = {}): P
       patentsUpserted: docketsUpserted,
       exclusivitiesUpserted: 0,
       rowsSkipped: issues.length,
-      summary: JSON.parse(JSON.stringify({ companiesChecked, casesTouched, docketsUpserted, confidenceCounts, abortedOnAuthError })),
+      summary: JSON.parse(
+        JSON.stringify({ companiesChecked, casesTouched, docketsUpserted, confidenceCounts, abortedOnAuthError, cancelled }),
+      ),
     },
   });
 

@@ -10,8 +10,24 @@ import { runPurpleBookIngestion, PURPLE_BOOK_SOURCE_NAME } from "./purpleBook";
 import { runParagraphIVIngestion, PARAGRAPH_IV_SOURCE_NAME } from "./paragraphIV";
 import { runPtaEnrichment, PTA_SOURCE_NAME } from "./pta";
 import { runLitigationIngestion, LITIGATION_SOURCE_NAME } from "./litigation";
+import { requestCancel } from "./cancellation";
 
 export type PipelineKey = "orange_book" | "purple_book" | "paragraph_iv" | "pta" | "litigation";
+
+// Every pipeline checks the cancellation flag mid-run now (see each
+// pipeline's own run loop and cancellation.ts): PTA and litigation check a
+// boolean between candidates in their per-item loop; Orange Book/Purple
+// Book/Paragraph IV instead check between their fetch/parse/load phases
+// and tie an AbortController to the same flag for their fetch() calls, so
+// a Stop click can interrupt even a slow download rather than only being
+// noticed once the whole run finishes.
+const CANCELLABLE_PIPELINES: ReadonlySet<PipelineKey> = new Set<PipelineKey>([
+  "orange_book",
+  "purple_book",
+  "paragraph_iv",
+  "pta",
+  "litigation",
+]);
 
 const PIPELINES: Record<PipelineKey, { sourceName: string; run: () => Promise<{ status: string }> }> = {
   orange_book: { sourceName: ORANGE_BOOK_SOURCE_NAME, run: () => runOrangeBookIngestion() },
@@ -45,14 +61,15 @@ const runningInMemory = new Set<PipelineKey>();
 // moment someone next tries to trigger that pipeline — no reaper cron.
 const STALE_RUNNING_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 
-async function isRunning(key: PipelineKey): Promise<boolean> {
-  if (runningInMemory.has(key)) return true;
-
+// Returns the currently-RUNNING IngestionRun's id for this pipeline, or
+// null if it isn't running (also used by stopPipeline, which needs the
+// actual row id to set cancelRequested on).
+async function findRunningRunId(key: PipelineKey): Promise<string | null> {
   const source = await prisma.dataSource.findUnique({ where: { name: PIPELINES[key].sourceName } });
-  if (!source) return false;
+  if (!source) return null;
 
   const latest = await prisma.ingestionRun.findFirst({ where: { sourceId: source.id }, orderBy: { startedAt: "desc" } });
-  if (!latest || latest.status !== "RUNNING") return false;
+  if (!latest || latest.status !== "RUNNING") return null;
 
   if (Date.now() - latest.startedAt.getTime() > STALE_RUNNING_THRESHOLD_MS) {
     await prisma.ingestionRun.update({
@@ -63,10 +80,15 @@ async function isRunning(key: PipelineKey): Promise<boolean> {
         summary: { errorMessage: "Marked stale: still RUNNING after 6h with no completion — likely an orphaned run from a crashed process." },
       },
     });
-    return false;
+    return null;
   }
 
-  return true;
+  return latest.id;
+}
+
+async function isRunning(key: PipelineKey): Promise<boolean> {
+  if (runningInMemory.has(key)) return true;
+  return (await findRunningRunId(key)) != null;
 }
 
 export type TriggerResult = { ok: true } | { ok: false; reason: "already_running"; busy: PipelineKey[] };
@@ -87,6 +109,16 @@ export async function triggerPipeline(key: PipelineKey): Promise<TriggerResult> 
   return { ok: true };
 }
 
+export type StopResult = { ok: true } | { ok: false; reason: "not_running" | "not_cancellable" };
+
+export async function stopPipeline(key: PipelineKey): Promise<StopResult> {
+  if (!CANCELLABLE_PIPELINES.has(key)) return { ok: false, reason: "not_cancellable" };
+  const runId = await findRunningRunId(key);
+  if (!runId) return { ok: false, reason: "not_running" };
+  await requestCancel(runId);
+  return { ok: true };
+}
+
 export async function triggerAll(): Promise<TriggerResult> {
   const busy = (await Promise.all(PIPELINE_ORDER.map(async (k) => ((await isRunning(k)) ? k : null)))).filter(
     (k): k is PipelineKey => k != null,
@@ -103,7 +135,10 @@ export async function triggerAll(): Promise<TriggerResult> {
       try {
         const summary = await PIPELINES[k].run();
         runningInMemory.delete(k);
-        if (summary.status === "FAILED") break; // mirrors scripts/refresh-data.ts's own stop-on-failure behavior
+        // mirrors scripts/refresh-data.ts's own stop-on-failure behavior;
+        // CANCELLED also stops the chain — a Stop click on step 2 of 3
+        // shouldn't be overridden by "all" auto-starting step 3 right after.
+        if (summary.status === "FAILED" || summary.status === "CANCELLED") break;
       } catch (error) {
         console.error(`[orchestrator] ${k} threw unexpectedly during "all":`, error);
         runningInMemory.delete(k);

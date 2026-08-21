@@ -1,16 +1,27 @@
-// Small helpers shared by both ingestion pipelines (orangeBook/load.ts,
-// purpleBook/load.ts) — extracted here once a second pipeline needed the
-// exact same logic, rather than kept speculative/duplicated.
+// Small helpers shared by all three fast ingestion pipelines
+// (orangeBook/load.ts, purpleBook/load.ts, paragraphIV/load.ts) —
+// extracted here once a second pipeline needed the exact same logic,
+// rather than kept speculative/duplicated.
+
+import { RunCancelledError } from "./cancellation";
 
 // Keeps concurrent DB round-trips bounded well under the `pg` pool's
 // default max (10), so this can run alongside other connections without
 // starving the pool.
 export const DEFAULT_INGESTION_CONCURRENCY = 6;
 
+// `signal`, when given, is checked synchronously (cheap — no DB round trip
+// per item) before starting each item, so a Stop click during a load pass
+// of tens of thousands of rows is noticed within roughly one item's
+// latency rather than only once the whole pass finishes. See
+// cancellation.ts's abortSignalFor — that's what's passed in here, the
+// same AbortSignal already wired to the pipeline's own fetch() calls, so
+// one signal covers the whole run rather than one per phase.
 export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (item: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
@@ -18,6 +29,7 @@ export async function mapWithConcurrency<T, R>(
     while (true) {
       const i = next++;
       if (i >= items.length) return;
+      if (signal?.aborted) throw new RunCancelledError();
       results[i] = await fn(items[i]);
     }
   }

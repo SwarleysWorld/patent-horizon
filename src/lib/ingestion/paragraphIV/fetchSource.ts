@@ -57,14 +57,14 @@ export function findParagraphIVPdfLink(parentPageHtml: string): ParagraphIVSourc
   return candidates[0] ?? null;
 }
 
-async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS });
+async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS, signal });
   if (!res.ok) throw new Error(`failed to fetch ${url}: HTTP ${res.status}`);
   return res.text();
 }
 
-async function fetchBinary(url: string): Promise<Buffer> {
-  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS });
+async function fetchBinary(url: string, signal?: AbortSignal): Promise<Buffer> {
+  const res = await fetch(url, { headers: BROWSER_LIKE_HEADERS, signal });
   if (!res.ok) throw new Error(`failed to fetch ${url}: HTTP ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -75,19 +75,21 @@ export interface FetchedParagraphIVSource {
   pdfBytes: Buffer;
 }
 
-export async function fetchParagraphIVPdf(opts: { explicitPdfUrl?: string } = {}): Promise<FetchedParagraphIVSource> {
+export async function fetchParagraphIVPdf(
+  opts: { explicitPdfUrl?: string; signal?: AbortSignal } = {},
+): Promise<FetchedParagraphIVSource> {
   if (opts.explicitPdfUrl) {
-    const pdfBytes = await fetchBinary(opts.explicitPdfUrl);
+    const pdfBytes = await fetchBinary(opts.explicitPdfUrl, opts.signal);
     return { pdfUrl: opts.explicitPdfUrl, linkText: "(explicit URL)", pdfBytes };
   }
 
-  const parentHtml = await fetchText(PARENT_PAGE_URL);
+  const parentHtml = await fetchText(PARENT_PAGE_URL, opts.signal);
   const link = findParagraphIVPdfLink(parentHtml);
   if (!link) {
     throw new Error(
       `could not find a "Paragraph IV Patent Certifications" PDF link on ${PARENT_PAGE_URL} — FDA may have restructured the page; pass --url explicitly`,
     );
   }
-  const pdfBytes = await fetchBinary(link.url);
+  const pdfBytes = await fetchBinary(link.url, opts.signal);
   return { pdfUrl: link.url, linkText: link.linkText, pdfBytes };
 }

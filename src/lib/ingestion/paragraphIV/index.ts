@@ -3,6 +3,7 @@ import { fetchParagraphIVPdf } from "./fetchSource";
 import { parseParagraphIVPdf } from "./parsePdf";
 import { loadParagraphIVData } from "./load";
 import type { RowIssue } from "./types";
+import { throwIfCancelled, abortSignalFor, statusForError } from "../cancellation";
 
 export const PARAGRAPH_IV_SOURCE_NAME = "FDA Paragraph IV Certifications List";
 const PARAGRAPH_IV_INFO_PAGE =
@@ -10,7 +11,7 @@ const PARAGRAPH_IV_INFO_PAGE =
 
 export interface IngestionRunSummary {
   runId: string;
-  status: "SUCCESS" | "PARTIAL" | "FAILED";
+  status: "SUCCESS" | "PARTIAL" | "FAILED" | "CANCELLED";
   startedAt: Date;
   finishedAt: Date;
   durationMs: number;
@@ -57,13 +58,24 @@ export async function runParagraphIVIngestion(opts: { explicitPdfUrl?: string } 
 
   const run = await prisma.ingestionRun.create({ data: { sourceId: source.id, status: "RUNNING" } });
   const startedAt = run.startedAt;
+  // One AbortController for the whole run, not one per phase: its signal
+  // both aborts an in-flight fetch() and is checked (cheaply, no DB round
+  // trip per item) by mapWithConcurrency inside loadParagraphIVData — the
+  // bulk DB-upsert phase is the slowest part of a run by far, and a Stop
+  // click landing during it needs a checkpoint there too, not just
+  // between phases.
+  const ac = abortSignalFor(run.id);
 
   try {
-    const { pdfUrl, pdfBytes } = await fetchParagraphIVPdf({ explicitPdfUrl: opts.explicitPdfUrl });
+    await throwIfCancelled(run.id);
+    const { pdfUrl, pdfBytes } = await fetchParagraphIVPdf({ explicitPdfUrl: opts.explicitPdfUrl, signal: ac.signal });
+
+    await throwIfCancelled(run.id);
     const { challenges, issues, rawCount } = await parseParagraphIVPdf(pdfBytes);
 
+    await throwIfCancelled(run.id);
     const verifiedAt = new Date();
-    const loadResult = await loadParagraphIVData(challenges, { sourceId: source.id, verifiedAt, issues });
+    const loadResult = await loadParagraphIVData(challenges, { sourceId: source.id, verifiedAt, issues, signal: ac.signal });
 
     const finishedAt = new Date();
     const status: IngestionRunSummary["status"] = loadResult.challengesSkipped === 0 && issues.length === 0 ? "SUCCESS" : "PARTIAL";
@@ -112,16 +124,20 @@ export async function runParagraphIVIngestion(opts: { explicitPdfUrl?: string } 
     return summary;
   } catch (error) {
     const finishedAt = new Date();
+    const status = statusForError(error);
     const errorMessage = error instanceof Error ? error.message : String(error);
 
     await prisma.ingestionRun.update({
       where: { id: run.id },
-      data: { status: "FAILED", finishedAt, summary: { errorMessage } },
+      // Cancellation isn't an error — leave summary.errorMessage unset so
+      // SourceCard's dedicated CANCELLED message shows instead of the
+      // FAILED-styled error box.
+      data: { status, finishedAt, summary: status === "CANCELLED" ? {} : { errorMessage } },
     });
 
     return {
       runId: run.id,
-      status: "FAILED",
+      status,
       startedAt,
       finishedAt,
       durationMs: finishedAt.getTime() - startedAt.getTime(),
@@ -138,5 +154,7 @@ export async function runParagraphIVIngestion(opts: { explicitPdfUrl?: string } 
       issueCategories: [],
       errorMessage,
     };
+  } finally {
+    ac.stop();
   }
 }
