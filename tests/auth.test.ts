@@ -5,6 +5,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/session";
 import { parseAnalystAllowlist, isAnalystEmail } from "@/lib/analystAllowlist";
+import { parseSignupAllowlist, isAuthorizedToSignUp } from "@/lib/signupAllowlist";
 
 beforeEach(async () => {
   await resetDb();
@@ -22,6 +23,37 @@ describe("parseAnalystAllowlist / isAnalystEmail", () => {
   it("treats undefined/empty as an empty allowlist — no email matches", () => {
     expect(isAnalystEmail("anyone@example.com", parseAnalystAllowlist(undefined))).toBe(false);
     expect(isAnalystEmail("anyone@example.com", parseAnalystAllowlist(""))).toBe(false);
+  });
+});
+
+describe("parseSignupAllowlist / isAuthorizedToSignUp", () => {
+  it("authorizes an exact email match, trimmed and case-insensitive", () => {
+    const list = parseSignupAllowlist(" Alice@Example.com, bob@example.com ,,");
+    expect(isAuthorizedToSignUp("alice@example.com", list)).toBe(true);
+    expect(isAuthorizedToSignUp("ALICE@EXAMPLE.COM", list)).toBe(true);
+    expect(isAuthorizedToSignUp("carol@example.com", list)).toBe(false);
+  });
+
+  it("authorizes an entire domain via an @domain entry", () => {
+    const list = parseSignupAllowlist("@acme.com");
+    expect(isAuthorizedToSignUp("anyone@acme.com", list)).toBe(true);
+    expect(isAuthorizedToSignUp("Someone.Else@ACME.com", list)).toBe(true);
+    expect(isAuthorizedToSignUp("anyone@other.com", list)).toBe(false);
+  });
+
+  it("fails closed: undefined/empty means nobody is authorized", () => {
+    expect(isAuthorizedToSignUp("anyone@example.com", parseSignupAllowlist(undefined))).toBe(false);
+    expect(isAuthorizedToSignUp("anyone@example.com", parseSignupAllowlist(""))).toBe(false);
+  });
+});
+
+describe("signup allowlist enforcement", () => {
+  it("rejects a signup whose email isn't authorized", async () => {
+    await expect(
+      auth.api.signUpEmail({
+        body: { email: "not-authorized@not-example.com", password: "TestPassword123!", name: "Nope" },
+      }),
+    ).rejects.toThrow();
   });
 });
 
