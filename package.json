@@ -31,6 +31,7 @@
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "@scalar/nextjs-api-reference": "^0.11.14",
+    "@thednp/dommatrix": "^3.1.1",
     "better-auth": "^1.6.28",
     "clsx": "^2.1.1",
     "next": "16.3.0",

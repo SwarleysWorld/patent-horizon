@@ -32,6 +32,7 @@
 // differing only by a missing inter-word space in a free-text cell. Any
 // future regression should be re-validated the same way against a fresh
 // download, not assumed away.
+import "./domMatrixPolyfill";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { WorkerMessageHandler } from "pdfjs-dist/legacy/build/pdf.worker.mjs";
 import type { DecisionHistoryEntry, ParsedChallenge, ParseResult, PivDecisionStatus, RowIssue } from "./types";
